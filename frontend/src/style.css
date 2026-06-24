@@ -89,7 +89,7 @@ pre { margin: 0; padding: 16px; border-top: 1px solid #dce1da; white-space: pre-
 .chat-message.assistant { border-left-color: #1e5c43; }
 .chat-message.user { justify-self: end; border-left-color: #d25834; background: #fff8f1; }
 .chat-message strong { display: block; margin-bottom: 6px; }
-.chat-message p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+.chat-message p { margin: 0; white-space: pre-wrap; line-height: 1.65; }
 .tool-item { display: flex; justify-content: space-between; gap: 12px; padding: 11px 12px; background: #f3f6f1; border: 1px solid #e1e5df; }
 .tool-item small { color: #617067; }
 .source-list.compact { margin-top: 16px; max-height: 360px; overflow: auto; }

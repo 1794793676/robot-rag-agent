@@ -81,7 +81,6 @@ client.onMessage((message) => {
     status.value = micActive.value ? 'listening' : 'connected'
   } else if (message.type === 'speech_started') {
     isUserSpeaking.value = true
-    interruptPlayback('server_speech_started')
   } else if (message.type === 'speech_stopped') {
     isUserSpeaking.value = false
   } else if (message.type === 'disconnected') {
@@ -96,7 +95,12 @@ client.onMessage((message) => {
 })
 
 interruptController.onUserSpeechStart(() => {
-  interruptPlayback('user_speech')
+  if (!agentSpeaking.value) return
+  audioPlayer.stop()
+  audioPlayer.clear()
+  client.interrupt(currentResponseId.value, 'user_speech')
+  setAgentSpeaking(false)
+  status.value = 'interrupted'
 })
 
 async function connect() {
@@ -144,14 +148,9 @@ async function sendText() {
 }
 
 function manualInterrupt() {
-  interruptPlayback('manual')
-}
-
-function interruptPlayback(reason) {
-  if (!agentSpeaking.value) return
   audioPlayer.stop()
   audioPlayer.clear()
-  client.interrupt(currentResponseId.value, reason)
+  client.interrupt(currentResponseId.value, 'manual')
   setAgentSpeaking(false)
   status.value = 'interrupted'
 }

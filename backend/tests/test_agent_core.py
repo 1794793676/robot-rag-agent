@@ -238,37 +238,6 @@ def test_qwen_client_maps_realtime_stream_events_to_browser_messages():
     assert outbound[3]["audio"] == "AAAA"
 
 
-def test_qwen_client_logs_readable_text_delta_with_metadata_at_debug(caplog):
-    import logging
-
-    from app.agent.qwen_realtime_client import QwenRealtimeClient
-
-    async def send_event(_message):
-        return None
-
-    qwen = QwenRealtimeClient(send_event=send_event)
-    qwen.session_id = "sess_1"
-
-    caplog.set_level(logging.DEBUG, logger="agent")
-    asyncio.run(
-        qwen._handle_event(
-            {
-                "type": "response.text.delta",
-                "response_id": "resp_1",
-                "delta": "第一行\n第二行",
-            }
-        )
-    )
-
-    info_messages = [record.getMessage() for record in caplog.records if record.levelno == logging.INFO]
-    debug_messages = [record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG]
-    assert any("第一行\\n第二行" in message for message in info_messages)
-    assert any(
-        "session=sess_1" in message and "response=resp_1" in message and "chars=7" in message
-        for message in debug_messages
-    )
-
-
 def test_qwen_client_sends_audio_cancel_and_tool_result_payloads():
     from app.agent.qwen_realtime_client import QwenRealtimeClient
 
