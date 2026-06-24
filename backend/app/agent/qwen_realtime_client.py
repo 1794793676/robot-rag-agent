@@ -203,7 +203,10 @@ class QwenRealtimeClient:
             "response.text.text",
         ) and self.send_event:
             text_delta = event.get("delta") or event.get("text") or ""
-            agent_log.info(
+            readable_text = self._readable_log_text(text_delta)
+            if readable_text:
+                agent_log.info("answer_token text=%s", readable_text)
+            agent_log.debug(
                 "text_delta session=%s response=%s chars=%s",
                 self.session_id,
                 response_id or self.current_response_id,
@@ -218,7 +221,7 @@ class QwenRealtimeClient:
                 }
             )
         elif event_type == "response.audio.delta" and self.send_event:
-            agent_log.info(
+            agent_log.debug(
                 "audio_delta session=%s response=%s bytes_base64=%s",
                 self.session_id,
                 response_id or self.current_response_id,
@@ -281,7 +284,10 @@ class QwenRealtimeClient:
                 }
             )
         result = await dispatch_tool_call(name, arguments, self.session_id or "")
-        tool_log.info("tool_result session=%s tool=%s matched=%s", self.session_id, name, result.get("matched"))
+        if name == "rag_search":
+            self._log_rag_result(arguments, result)
+        else:
+            tool_log.info("tool_result session=%s tool=%s matched=%s", self.session_id, name, result.get("matched"))
         if self.send_event:
             await self.send_event(
                 {
@@ -294,10 +300,28 @@ class QwenRealtimeClient:
             )
         await self.send_tool_result(call_id, result)
 
+    def _log_rag_result(self, arguments: dict[str, Any], result: dict[str, Any]) -> None:
+        top_score = max((float(item.get("score") or 0.0) for item in result.get("results", [])), default=0.0)
+        tool_log.info(
+            "rag_match session=%s query=%s matched=%s confidence=%.3f top_score=%.3f",
+            self.session_id,
+            str(arguments.get("query") or ""),
+            bool(result.get("matched")),
+            float(result.get("confidence") or 0.0),
+            top_score,
+        )
+
     async def _send(self, payload: dict[str, Any]) -> None:
         if not self.websocket:
             raise QwenRealtimeError("QWEN_NOT_CONNECTED", "Qwen Realtime is not connected")
         await self.websocket.send(json.dumps(payload, ensure_ascii=False))
+
+    @staticmethod
+    def _readable_log_text(text: str, limit: int = 200) -> str:
+        escaped = text.replace("\n", "\\n").replace("\r", "\\r")
+        if len(escaped) <= limit:
+            return escaped
+        return f"{escaped[:limit]}..."
 
     @staticmethod
     def _event_id() -> str:

@@ -238,6 +238,69 @@ def test_qwen_client_maps_realtime_stream_events_to_browser_messages():
     assert outbound[3]["audio"] == "AAAA"
 
 
+def test_qwen_client_logs_audio_delta_metadata_at_debug(caplog):
+    import logging
+
+    from app.agent.qwen_realtime_client import QwenRealtimeClient
+
+    async def send_event(_message):
+        return None
+
+    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen.session_id = "sess_1"
+
+    caplog.set_level(logging.DEBUG, logger="agent")
+    asyncio.run(
+        qwen._handle_event(
+            {
+                "type": "response.audio.delta",
+                "response_id": "resp_1",
+                "delta": "AAAA",
+            }
+        )
+    )
+
+    info_messages = [record.getMessage() for record in caplog.records if record.levelno == logging.INFO]
+    debug_messages = [record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG]
+    assert not any("audio_delta" in message for message in info_messages)
+    assert any(
+        "audio_delta session=sess_1 response=resp_1 bytes_base64=4" in message
+        for message in debug_messages
+    )
+
+
+def test_qwen_client_logs_answer_token_at_info_and_metadata_at_debug(caplog):
+    import logging
+
+    from app.agent.qwen_realtime_client import QwenRealtimeClient
+
+    async def send_event(_message):
+        return None
+
+    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen.session_id = "sess_1"
+
+    caplog.set_level(logging.DEBUG, logger="agent")
+    asyncio.run(
+        qwen._handle_event(
+            {
+                "type": "response.text.delta",
+                "response_id": "resp_1",
+                "delta": "第一行\n第二行",
+            }
+        )
+    )
+
+    info_messages = [record.getMessage() for record in caplog.records if record.levelno == logging.INFO]
+    debug_messages = [record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG]
+    assert any("answer_token text=第一行\\n第二行" in message for message in info_messages)
+    assert not any("session=sess_1" in message and "chars=7" in message for message in info_messages)
+    assert any(
+        "text_delta session=sess_1 response=resp_1 chars=7" in message
+        for message in debug_messages
+    )
+
+
 def test_qwen_client_sends_audio_cancel_and_tool_result_payloads():
     from app.agent.qwen_realtime_client import QwenRealtimeClient
 
@@ -337,3 +400,52 @@ def test_qwen_client_dispatches_tool_call_and_returns_result(monkeypatch):
     payloads = [__import__("json").loads(item) for item in qwen.websocket.sent]
     assert payloads[0]["item"]["call_id"] == "call_1"
     assert payloads[1]["type"] == "response.create"
+
+
+def test_qwen_client_logs_rag_match_summary_at_info(monkeypatch, caplog):
+    import logging
+
+    import app.agent.qwen_realtime_client as module
+    from app.agent.qwen_realtime_client import QwenRealtimeClient
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent: list[str] = []
+
+        async def send(self, payload):
+            self.sent.append(payload)
+
+    async def fake_dispatch(name, arguments, session_id):
+        return {
+            "matched": True,
+            "confidence": 0.82,
+            "results": [{"source": "guide.txt", "score": 0.82}],
+        }
+
+    async def send_event(_message):
+        return None
+
+    monkeypatch.setattr(module, "dispatch_tool_call", fake_dispatch)
+    caplog.set_level(logging.INFO, logger="tool_calls")
+    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen.session_id = "sess_1"
+    qwen.websocket = FakeWebSocket()
+
+    asyncio.run(
+        qwen._handle_event(
+            {
+                "type": "response.function_call_arguments.done",
+                "response_id": "resp_1",
+                "name": "rag_search",
+                "call_id": "call_1",
+                "arguments": "{\"query\":\"电池\"}",
+            }
+        )
+    )
+
+    info_messages = [record.getMessage() for record in caplog.records if record.levelno == logging.INFO]
+    assert any(
+        "rag_match session=sess_1 query=电池 matched=True confidence=0.820 top_score=0.820"
+        in message
+        for message in info_messages
+    )
