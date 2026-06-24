@@ -267,6 +267,32 @@ def test_qwen_client_sends_audio_cancel_and_tool_result_payloads():
     assert payloads[3]["type"] == "response.create"
 
 
+def test_qwen_client_disables_environment_proxy_for_realtime_connection(monkeypatch):
+    import app.agent.qwen_realtime_client as module
+    from app.agent.qwen_realtime_client import QwenRealtimeClient
+
+    connect_calls: list[dict] = []
+    sent_payloads: list[str] = []
+
+    class FakeWebSocket:
+        async def send(self, payload):
+            sent_payloads.append(payload)
+
+    async def fake_connect(url, **kwargs):
+        connect_calls.append({"url": url, **kwargs})
+        return FakeWebSocket()
+
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:10808")
+    monkeypatch.setattr(module.websockets, "connect", fake_connect)
+
+    qwen = QwenRealtimeClient()
+    asyncio.run(qwen.connect("sess_1"))
+
+    assert connect_calls[0]["proxy"] is None
+    assert sent_payloads
+
+
 def test_qwen_client_dispatches_tool_call_and_returns_result(monkeypatch):
     import app.agent.qwen_realtime_client as module
     from app.agent.qwen_realtime_client import QwenRealtimeClient

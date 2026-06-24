@@ -73,6 +73,7 @@ class QwenRealtimeClient:
             self.websocket = await websockets.connect(
                 url,
                 additional_headers={"Authorization": f"Bearer {api_key}"},
+                proxy=None,
                 ping_interval=20,
                 ping_timeout=20,
                 max_size=8 * 1024 * 1024,
@@ -81,6 +82,7 @@ class QwenRealtimeClient:
             self.websocket = await websockets.connect(
                 url,
                 extra_headers={"Authorization": f"Bearer {api_key}"},
+                proxy=None,
                 ping_interval=20,
                 ping_timeout=20,
                 max_size=8 * 1024 * 1024,
@@ -99,7 +101,7 @@ class QwenRealtimeClient:
                     "instructions": AGENT_SYSTEM_PROMPT,
                     "turn_detection": {
                         "type": "server_vad",
-                        "threshold": 0.5,
+                        "threshold": 0.8,
                         "silence_duration_ms": 800,
                     },
                     "tools": TOOLS,
