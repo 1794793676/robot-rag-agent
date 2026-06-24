@@ -29,14 +29,20 @@ export function interruptActivePlayback({
   reason,
   audioPlayer,
   client,
+  markInterruptedResponse,
   setAgentSpeaking,
   setStatus,
 }) {
-  if (!agentSpeaking) return false
+  if (!agentSpeaking && !responseId) return false
+  if (responseId) markInterruptedResponse?.(responseId)
   audioPlayer.stop()
   audioPlayer.clear()
-  client.interrupt(responseId, reason)
+  if (responseId) client.interrupt(responseId, reason)
   setAgentSpeaking(false)
   setStatus('interrupted')
   return true
+}
+
+export function isResponseInterrupted(interruptedResponseIds, responseId) {
+  return !!responseId && interruptedResponseIds.has(responseId)
 }

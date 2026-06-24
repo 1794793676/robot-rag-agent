@@ -7,6 +7,7 @@ import { StreamingAudioPlayer } from '../webrtc/audioPlayer'
 import {
   appendAssistantDelta as appendAssistantDeltaMessage,
   interruptActivePlayback,
+  isResponseInterrupted,
   startAssistantResponse,
 } from '../webrtc/agentConversation'
 import { InterruptController } from '../webrtc/interruptController'
@@ -25,6 +26,7 @@ const isUserSpeaking = ref(false)
 const micActive = ref(false)
 const diagnosticRunning = ref(false)
 const diagnostics = ref([])
+const interruptedResponseIds = new Set()
 let activeDiagnostic = null
 
 const client = new RealtimeClient()
@@ -51,6 +53,7 @@ client.onMessage((message) => {
     status.value = 'connected'
   } else if (message.type === 'response_started') {
     currentResponseId.value = message.response_id
+    interruptedResponseIds.delete(message.response_id)
     audioPlayer.setCurrentResponse(message.response_id)
     setAgentSpeaking(true)
     startAssistantResponse(messages.value, message.response_id)
@@ -59,6 +62,7 @@ client.onMessage((message) => {
     status.value = 'speaking'
   } else if (message.type === 'audio_delta') {
     if (message.response_id) {
+      if (isResponseInterrupted(interruptedResponseIds, message.response_id)) return
       audioPlayer.setCurrentResponse(message.response_id)
       audioPlayer.enqueueAudio(message.response_id, message.audio || '')
       setAgentSpeaking(true)
@@ -159,6 +163,7 @@ function stopCurrentPlayback(reason) {
     reason,
     audioPlayer,
     client,
+    markInterruptedResponse: (responseId) => interruptedResponseIds.add(responseId),
     setAgentSpeaking,
     setStatus: (value) => {
       status.value = value
@@ -263,9 +268,7 @@ function recordDiagnosticEvent(message) {
   } else if (mode === 'interrupt') {
     if (message.type === 'audio_delta' && entry.responseId && !activeDiagnostic.sentInterrupt) {
       activeDiagnostic.sentInterrupt = true
-      audioPlayer.stop()
-      audioPlayer.clear()
-      client.interrupt(entry.responseId, 'browser_diagnostic')
+      stopCurrentPlayback('browser_diagnostic')
     } else if (message.type === 'response_cancelled') {
       finishDiagnostic({
         ok: Boolean(activeDiagnostic.sentInterrupt && entry.counts.clear_audio_buffer),

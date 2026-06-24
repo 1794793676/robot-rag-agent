@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {
   appendAssistantDelta,
   interruptActivePlayback,
+  isResponseInterrupted,
   startAssistantResponse,
 } from './agentConversation.js'
 
@@ -33,12 +34,14 @@ import {
     client: {
       interrupt: (responseId, reason) => calls.push(['interrupt', responseId, reason]),
     },
+    markInterruptedResponse: (responseId) => calls.push(['mark', responseId]),
     setAgentSpeaking: (value) => calls.push(['speaking', value]),
     setStatus: (value) => calls.push(['status', value]),
   })
 
   assert.equal(result, true)
   assert.deepEqual(calls, [
+    ['mark', 'resp_1'],
     'stop',
     'clear',
     ['interrupt', 'resp_1', 'user_speech'],
@@ -58,10 +61,47 @@ import {
       clear: () => calls.push('clear'),
     },
     client: {
+      interrupt: (responseId, reason) => calls.push(['interrupt', responseId, reason]),
+    },
+    markInterruptedResponse: (responseId) => calls.push(['mark', responseId]),
+    setAgentSpeaking: (value) => calls.push(['speaking', value]),
+    setStatus: (value) => calls.push(['status', value]),
+  })
+
+  assert.equal(result, true)
+  assert.deepEqual(calls, [
+    ['mark', 'resp_1'],
+    'stop',
+    'clear',
+    ['interrupt', 'resp_1', 'user_speech'],
+    ['speaking', false],
+    ['status', 'interrupted'],
+  ])
+}
+
+{
+  const interruptedResponseIds = new Set(['resp_1'])
+  assert.equal(isResponseInterrupted(interruptedResponseIds, 'resp_1'), true)
+  assert.equal(isResponseInterrupted(interruptedResponseIds, 'resp_2'), false)
+  assert.equal(isResponseInterrupted(interruptedResponseIds, null), false)
+}
+
+{
+  const calls = []
+  const result = interruptActivePlayback({
+    agentSpeaking: false,
+    responseId: null,
+    reason: 'user_speech',
+    audioPlayer: {
+      stop: () => calls.push('stop'),
+      clear: () => calls.push('clear'),
+    },
+    client: {
       interrupt: () => calls.push('interrupt'),
     },
-    setAgentSpeaking: () => calls.push('speaking'),
-    setStatus: () => calls.push('status'),
+    markInterruptedResponse: (responseId) => calls.push(['mark', responseId]),
+    setAgentSpeaking: (value) => calls.push(['speaking', value]),
+    setStatus: (value) => calls.push(['status', value]),
   })
 
   assert.equal(result, false)
