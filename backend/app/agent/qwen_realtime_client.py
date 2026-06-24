@@ -203,7 +203,10 @@ class QwenRealtimeClient:
             "response.text.text",
         ) and self.send_event:
             text_delta = event.get("delta") or event.get("text") or ""
-            agent_log.info(
+            readable_text = self._readable_log_text(text_delta)
+            if readable_text:
+                agent_log.info("qwen_text_delta text=%s", readable_text)
+            agent_log.debug(
                 "text_delta session=%s response=%s chars=%s",
                 self.session_id,
                 response_id or self.current_response_id,
@@ -298,6 +301,13 @@ class QwenRealtimeClient:
         if not self.websocket:
             raise QwenRealtimeError("QWEN_NOT_CONNECTED", "Qwen Realtime is not connected")
         await self.websocket.send(json.dumps(payload, ensure_ascii=False))
+
+    @staticmethod
+    def _readable_log_text(text: str, limit: int = 200) -> str:
+        escaped = text.replace("\n", "\\n").replace("\r", "\\r")
+        if len(escaped) <= limit:
+            return escaped
+        return f"{escaped[:limit]}..."
 
     @staticmethod
     def _event_id() -> str:
