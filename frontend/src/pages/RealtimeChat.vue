@@ -4,6 +4,11 @@ import ChatPanel from '../components/ChatPanel.vue'
 import RetrievalPanel from '../components/RetrievalPanel.vue'
 import VoiceButton from '../components/VoiceButton.vue'
 import { StreamingAudioPlayer } from '../webrtc/audioPlayer'
+import {
+  appendAssistantDelta as appendAssistantDeltaMessage,
+  interruptActivePlayback,
+  startAssistantResponse,
+} from '../webrtc/agentConversation'
 import { InterruptController } from '../webrtc/interruptController'
 import { RealtimeClient } from '../webrtc/realtimeClient'
 
@@ -48,9 +53,9 @@ client.onMessage((message) => {
     currentResponseId.value = message.response_id
     audioPlayer.setCurrentResponse(message.response_id)
     setAgentSpeaking(true)
-    appendAssistant('')
+    startAssistantResponse(messages.value, message.response_id)
   } else if (message.type === 'text_delta') {
-    appendAssistantDelta(message.delta || '')
+    appendAssistantDelta(message.response_id || currentResponseId.value, message.delta || '')
     status.value = 'speaking'
   } else if (message.type === 'audio_delta') {
     if (message.response_id) {
@@ -81,6 +86,7 @@ client.onMessage((message) => {
     status.value = micActive.value ? 'listening' : 'connected'
   } else if (message.type === 'speech_started') {
     isUserSpeaking.value = true
+    stopCurrentPlayback('server_speech_started')
   } else if (message.type === 'speech_stopped') {
     isUserSpeaking.value = false
   } else if (message.type === 'disconnected') {
@@ -95,12 +101,7 @@ client.onMessage((message) => {
 })
 
 interruptController.onUserSpeechStart(() => {
-  if (!agentSpeaking.value) return
-  audioPlayer.stop()
-  audioPlayer.clear()
-  client.interrupt(currentResponseId.value, 'user_speech')
-  setAgentSpeaking(false)
-  status.value = 'interrupted'
+  stopCurrentPlayback('user_speech')
 })
 
 async function connect() {
@@ -148,24 +149,25 @@ async function sendText() {
 }
 
 function manualInterrupt() {
-  audioPlayer.stop()
-  audioPlayer.clear()
-  client.interrupt(currentResponseId.value, 'manual')
-  setAgentSpeaking(false)
-  status.value = 'interrupted'
+  stopCurrentPlayback('manual')
 }
 
-function appendAssistant(text) {
-  const last = messages.value[messages.value.length - 1]
-  if (last?.role !== 'assistant') {
-    messages.value.push({ id: `${Date.now()}-a`, role: 'assistant', text })
-  }
+function stopCurrentPlayback(reason) {
+  interruptActivePlayback({
+    agentSpeaking: agentSpeaking.value,
+    responseId: currentResponseId.value,
+    reason,
+    audioPlayer,
+    client,
+    setAgentSpeaking,
+    setStatus: (value) => {
+      status.value = value
+    },
+  })
 }
 
-function appendAssistantDelta(delta) {
-  appendAssistant('')
-  const last = messages.value[messages.value.length - 1]
-  last.text += delta
+function appendAssistantDelta(responseId, delta) {
+  appendAssistantDeltaMessage(messages.value, responseId, delta)
 }
 
 function setAgentSpeaking(value) {
