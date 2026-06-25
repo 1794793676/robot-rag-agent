@@ -3,17 +3,26 @@ import { onMounted, ref } from 'vue'
 import RealtimeChat from './pages/RealtimeChat.vue'
 import {
   askQuestion,
+  createRagDatabase,
   deleteDocument,
   errorMessage,
   getChunks,
   getHealth,
+  getRagDatabase,
   listDocuments,
+  listRagDatabases,
   replaceDocument,
+  updateRagDatabasePrompt,
   uploadDocument,
 } from './api'
 
 const backend = ref({ connected: false, detail: '检查中…' })
 const activePage = ref('rag')
+const ragDatabases = ref([])
+const selectedRagDatabaseId = ref('')
+const newDatabaseName = ref('')
+const promptDraft = ref('')
+const promptStatus = ref('')
 const documents = ref([])
 const selectedFile = ref(null)
 const uploadStatus = ref('')
@@ -49,8 +58,9 @@ async function checkHealth() {
 }
 
 async function refreshDocuments() {
+  if (!selectedRagDatabaseId.value) return
   try {
-    const { data } = await listDocuments()
+    const { data } = await listDocuments(selectedRagDatabaseId.value)
     documents.value = data
     if (selectedDocument.value) {
       selectedDocument.value =
@@ -58,6 +68,72 @@ async function refreshDocuments() {
     }
   } catch (error) {
     uploadStatus.value = `文档列表加载失败：${errorMessage(error)}`
+  }
+}
+
+async function refreshRagDatabases() {
+  try {
+    const { data } = await listRagDatabases()
+    ragDatabases.value = data
+    if (!selectedRagDatabaseId.value || !data.some((item) => item.rag_database_id === selectedRagDatabaseId.value)) {
+      selectedRagDatabaseId.value = data[0]?.rag_database_id || ''
+    }
+    await reloadPrompt()
+    await refreshDocuments()
+  } catch (error) {
+    promptStatus.value = `数据库列表加载失败：${errorMessage(error)}`
+  }
+}
+
+async function switchRagDatabase() {
+  selectedDocument.value = null
+  chunks.value = []
+  qaResult.value = null
+  qaError.value = ''
+  await reloadPrompt()
+  await refreshDocuments()
+}
+
+async function reloadPrompt() {
+  if (!selectedRagDatabaseId.value) {
+    promptDraft.value = ''
+    return
+  }
+  try {
+    const { data } = await getRagDatabase(selectedRagDatabaseId.value)
+    promptDraft.value = data.prompt || ''
+    promptStatus.value = data.prompt ? '已加载当前数据库 Prompt' : '当前数据库未配置 Prompt，保存后只更新当前数据库'
+  } catch (error) {
+    promptStatus.value = `Prompt 加载失败：${errorMessage(error)}`
+  }
+}
+
+async function savePrompt() {
+  if (!selectedRagDatabaseId.value) return
+  try {
+    const { data } = await updateRagDatabasePrompt(selectedRagDatabaseId.value, promptDraft.value)
+    promptDraft.value = data.prompt || ''
+    promptStatus.value = 'Prompt 已保存到当前数据库'
+    await refreshRagDatabases()
+  } catch (error) {
+    promptStatus.value = `Prompt 保存失败：${errorMessage(error)}`
+  }
+}
+
+async function createDatabase() {
+  const name = newDatabaseName.value.trim()
+  if (!name) {
+    promptStatus.value = '请输入数据库名称'
+    return
+  }
+  try {
+    const { data } = await createRagDatabase(name)
+    newDatabaseName.value = ''
+    selectedRagDatabaseId.value = data.rag_database_id
+    promptStatus.value = `已创建数据库：${data.name}`
+    await refreshRagDatabases()
+  } catch (error) {
+    promptStatus.value = `数据库创建失败：${errorMessage(error)}`
   }
 }
 
@@ -74,7 +150,11 @@ async function submitUpload() {
   uploadProgress.value = 0
   uploadStatus.value = '上传并处理文档中…'
   try {
-    const { data, status } = await uploadDocument(selectedFile.value, updateProgress)
+    const { data, status } = await uploadDocument(
+      selectedFile.value,
+      updateProgress,
+      selectedRagDatabaseId.value,
+    )
     uploadStatus.value =
       status === 200
         ? `内容重复，已返回已有文档：${data.filename}`
@@ -95,7 +175,7 @@ async function showChunks(documentItem) {
   chunksLoading.value = true
   chunks.value = []
   try {
-    const { data } = await getChunks(documentItem.doc_id)
+    const { data } = await getChunks(documentItem.doc_id, selectedRagDatabaseId.value)
     chunks.value = data
   } catch (error) {
     uploadStatus.value = `Chunk 加载失败：${errorMessage(error)}`
@@ -114,7 +194,12 @@ function chooseReplacement(documentItem) {
     busy.value = true
     uploadStatus.value = `正在替换 ${documentItem.filename}…`
     try {
-      const { data } = await replaceDocument(documentItem.doc_id, file, updateProgress)
+      const { data } = await replaceDocument(
+        documentItem.doc_id,
+        file,
+        updateProgress,
+        selectedRagDatabaseId.value,
+      )
       uploadStatus.value = `替换完成：${data.filename}，${data.chunk_count} 个 chunk`
       await refreshDocuments()
       if (selectedDocument.value?.doc_id === documentItem.doc_id) await showChunks(data)
@@ -131,7 +216,7 @@ async function removeDocument(documentItem) {
   if (!window.confirm(`确认删除“${documentItem.filename}”？此操作会删除原文件和索引。`)) return
   busy.value = true
   try {
-    await deleteDocument(documentItem.doc_id)
+    await deleteDocument(documentItem.doc_id, selectedRagDatabaseId.value)
     if (selectedDocument.value?.doc_id === documentItem.doc_id) {
       selectedDocument.value = null
       chunks.value = []
@@ -154,7 +239,11 @@ async function ask() {
   qaError.value = ''
   qaResult.value = null
   try {
-    const { data } = await askQuestion(question.value.trim(), topK.value)
+    const { data } = await askQuestion(
+      question.value.trim(),
+      topK.value,
+      selectedRagDatabaseId.value,
+    )
     qaResult.value = data
   } catch (error) {
     qaError.value = errorMessage(error)
@@ -166,7 +255,8 @@ async function ask() {
 onMounted(async () => {
   const params = new URLSearchParams(window.location.search)
   if (params.get('page') === 'agent' || params.has('diag')) activePage.value = 'agent'
-  await Promise.all([checkHealth(), refreshDocuments()])
+  await checkHealth()
+  await refreshRagDatabases()
 })
 </script>
 
@@ -192,9 +282,42 @@ onMounted(async () => {
       <button data-testid="agent-tab" :class="{ active: activePage === 'agent' }" @click="activePage = 'agent'">实时语音 Agent</button>
     </nav>
 
-    <RealtimeChat v-if="activePage === 'agent'" />
+    <RealtimeChat v-if="activePage === 'agent'" :rag-database-id="selectedRagDatabaseId" />
 
     <template v-else>
+    <section class="panel database-panel">
+      <div class="section-heading">
+        <div>
+          <span class="step">00</span>
+          <h2>RAG 数据库</h2>
+        </div>
+        <button class="text-button" @click="refreshRagDatabases">刷新数据库</button>
+      </div>
+      <div class="database-row">
+        <select v-model="selectedRagDatabaseId" @change="switchRagDatabase">
+          <option
+            v-for="database in ragDatabases"
+            :key="database.rag_database_id"
+            :value="database.rag_database_id"
+          >
+            {{ database.name }}{{ database.is_default ? ' · 默认' : '' }}
+          </option>
+        </select>
+        <input v-model="newDatabaseName" placeholder="新数据库名称" />
+        <button :disabled="busy" @click="createDatabase">创建</button>
+      </div>
+      <textarea
+        v-model="promptDraft"
+        class="prompt-editor"
+        placeholder="当前数据库的独立 Prompt，留空则使用默认回答规则"
+      ></textarea>
+      <div class="prompt-actions">
+        <button class="primary" :disabled="!selectedRagDatabaseId" @click="savePrompt">保存 Prompt</button>
+        <button :disabled="!selectedRagDatabaseId" @click="reloadPrompt">重新加载</button>
+      </div>
+      <p v-if="promptStatus" class="status-message">{{ promptStatus }}</p>
+    </section>
+
     <section class="panel upload-panel">
       <div class="section-heading">
         <div>

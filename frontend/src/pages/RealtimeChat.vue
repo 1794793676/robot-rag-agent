@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import RetrievalPanel from '../components/RetrievalPanel.vue'
 import VoiceButton from '../components/VoiceButton.vue'
@@ -28,6 +28,10 @@ const diagnosticRunning = ref(false)
 const diagnostics = ref([])
 const interruptedResponseIds = new Set()
 let activeDiagnostic = null
+
+const props = defineProps({
+  ragDatabaseId: { type: String, default: '' },
+})
 
 const client = new RealtimeClient()
 const audioPlayer = new StreamingAudioPlayer()
@@ -113,7 +117,7 @@ async function connect() {
   error.value = ''
   status.value = 'connecting'
   try {
-    session.value = await client.createSession()
+    session.value = await client.createSession({ rag_database_id: props.ragDatabaseId || undefined })
     await client.connect()
   } catch (err) {
     error.value = err?.message || '连接失败'
@@ -326,6 +330,20 @@ onMounted(() => {
   else if (diag === 'interrupt') void runInterruptDiagnostic()
   else if (diag === 'microphone') void runMicrophoneDiagnostic()
 })
+
+watch(
+  () => props.ragDatabaseId,
+  () => {
+    if (!client.sessionId) return
+    interruptController.stop()
+    audioPlayer.stop()
+    client.close()
+    session.value = null
+    micActive.value = false
+    setAgentSpeaking(false)
+    status.value = 'idle'
+  },
+)
 
 onBeforeUnmount(() => {
   interruptController.stop()

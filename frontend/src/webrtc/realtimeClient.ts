@@ -15,13 +15,17 @@ export class RealtimeClient {
     this.handlers.push(handler)
   }
 
-  async createSession(): Promise<any> {
-    const response = await fetch('/api/agent/session', { method: 'POST' })
+  async createSession(payload: Record<string, any> = {}): Promise<any> {
+    const response = await fetch('/api/agent/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
     if (!response.ok) throw new Error(`创建会话失败：${response.status}`)
-    const payload = await response.json()
-    this.sessionId = payload.session_id
-    this.websocketUrl = this.absoluteWsUrl(payload.websocket_url)
-    return payload
+    const sessionPayload = await response.json()
+    this.sessionId = sessionPayload.session_id
+    this.websocketUrl = this.absoluteWsUrl(sessionPayload.websocket_url)
+    return sessionPayload
   }
 
   async connect(): Promise<void> {
