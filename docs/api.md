@@ -10,14 +10,40 @@ GET /health
 
 ## Documents
 
-- `GET /api/documents`
-- `POST /api/documents`
-- `GET /api/documents/{doc_id}`
-- `PUT /api/documents/{doc_id}`
-- `DELETE /api/documents/{doc_id}`
-- `GET /api/documents/{doc_id}/chunks`
+- `GET /api/documents?rag_database_id=...`
+- `POST /api/documents?rag_database_id=...`
+- `GET /api/documents/{doc_id}?rag_database_id=...`
+- `PUT /api/documents/{doc_id}?rag_database_id=...`
+- `DELETE /api/documents/{doc_id}?rag_database_id=...`
+- `GET /api/documents/{doc_id}/chunks?rag_database_id=...`
 
 上传仅支持 `txt`、`docx`、可复制文本 PDF。图片和扫描版 PDF 不进入 RAG。
+
+省略 `rag_database_id` 时使用默认知识库。
+
+## RAG Databases
+
+- `GET /api/rag-databases`
+- `POST /api/rag-databases`
+- `GET /api/rag-databases/{database_id}`
+- `PUT /api/rag-databases/{database_id}/prompt`
+
+创建数据库：
+
+```json
+{
+  "name": "设备手册",
+  "prompt": "回答时先给维修结论"
+}
+```
+
+更新 prompt 只影响指定数据库：
+
+```json
+{
+  "prompt": "只依据本数据库资料回答"
+}
+```
 
 ## RAG
 
@@ -29,6 +55,7 @@ POST /api/qa/search
 
 ```json
 {
+  "rag_database_id": "default",
   "query": "问题",
   "top_k": 5
 }
@@ -38,9 +65,13 @@ POST /api/qa/search
 
 ```json
 {
+  "rag_database_id": "default",
+  "rag_database_name": "默认知识库",
+  "prompt": "",
   "query": "问题",
   "results": [
     {
+      "rag_database_id": "default",
       "doc_id": "doc_xxx",
       "filename": "guide.pdf",
       "chunk_id": "chunk_xxx",
@@ -56,6 +87,9 @@ Agent 的 `rag_search` 工具会适配为：
 
 ```json
 {
+  "rag_database_id": "default",
+  "rag_database_name": "默认知识库",
+  "prompt": "",
   "matched": true,
   "confidence": 0.82,
   "results": [
@@ -63,7 +97,8 @@ Agent 的 `rag_search` 工具会适配为：
       "text": "片段",
       "source": "guide.pdf",
       "page": 3,
-      "score": 0.82
+      "score": 0.82,
+      "rag_database_id": "default"
     }
   ]
 }
@@ -81,6 +116,7 @@ POST /api/webrtc/session
 ```json
 {
   "session_id": "sess_xxx",
+  "rag_database_id": "default",
   "mode": "websocket_fallback",
   "websocket_url": "/api/agent/ws/sess_xxx",
   "model": "qwen3.5-omni-flash-realtime",
@@ -127,4 +163,3 @@ WS /api/agent/ws/{session_id}
   }
 }
 ```
-

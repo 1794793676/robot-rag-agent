@@ -1,6 +1,6 @@
 # Realtime Agent
 
-本项目在已有本地 RAG 之上新增实时语音 Agent。RAG 核心不变，Agent 只通过工具适配层调用现有 `/api/qa/search`。
+本项目在已有本地 RAG 之上新增实时语音 Agent。Agent 通过工具适配层调用共享 RAG 查询服务，使用 session 绑定的 `rag_database_id` 检索对应数据库，并应用该数据库的独立 prompt。
 
 ## 架构
 
@@ -17,6 +17,7 @@ Browser mic/text
   -> WebSocket /api/agent/ws/{session_id}
   -> Qwen Realtime WebSocket
   -> tool call: rag_search / web_search / get_session_context
+  -> shared RAG query service with session rag_database_id
   -> text_delta + audio_delta
   -> browser text + PCM audio playback
 ```
@@ -27,9 +28,23 @@ Qwen 官方 WebRTC 端点需要 allowlist，所以当前实现保留 `/api/webrt
 
 工具定义在 `backend/app/agent/tools.py`：
 
-- `rag_search`：调用现有 RAG 检索并统一返回 `{matched, confidence, results}`。
+- `rag_search`：调用共享 RAG 查询逻辑并统一返回 `{rag_database_id, rag_database_name, prompt, matched, confidence, results}`。
 - `web_search`：调用 Tavily、Serper 或 Bing。未配置 Key 时返回结构化错误，不中断会话。
-- `get_session_context`：返回当前 response_id、说话状态、最近工具调用和 RAG 结果。
+- `get_session_context`：返回当前 `rag_database_id`、response_id、说话状态、最近工具调用和 RAG 结果。
+
+创建 Agent session 时可传当前 RAG 数据库：
+
+```http
+POST /api/agent/session
+```
+
+```json
+{
+  "rag_database_id": "default"
+}
+```
+
+如果省略 `rag_database_id`，后端使用默认知识库。Agent 系统提示要求模型只把 `rag_search` 结果中的 `prompt` 用于同一个 `rag_database_id` 的检索结果，避免 A 数据库文档套用 B 数据库 prompt。
 
 Qwen Realtime 中 `tools` 与内置 `enable_search` 互斥，所以联网搜索没有使用模型内置搜索，而是服务器端工具。
 
@@ -46,7 +61,7 @@ cd backend
 2. 打开前端，切换到“实时语音 Agent”。
 3. 点击“连接 Agent”。
 4. 点击“开始语音”，授权麦克风。
-5. 询问上传文档相关问题，观察工具面板是否出现 `rag_search`。
+5. 询问上传文档相关问题，观察工具面板是否出现 `rag_search`，并确认来源来自当前选择的 RAG 数据库。
 
 浏览器诊断：
 

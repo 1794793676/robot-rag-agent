@@ -13,6 +13,7 @@
 - hnswlib 优先、NumPy 余弦暴力检索自动降级
 - SQLite 保存文档、chunks 和 float32 向量；索引可从数据库恢复
 - 检索 API、相似度阈值判断和生成式/离线抽取式问答
+- 多 RAG 数据库隔离，每个数据库拥有独立文档、检索结果和 prompt
 - 文档管理、chunk 查看和问答测试 Vue 页面
 - Qwen3.5-Omni-Realtime Agent session、Function Calling 工具和 WebSocket fallback
 - Agent 工具：`rag_search`、`web_search`、`get_session_context`
@@ -126,25 +127,30 @@ chmod +x run_all_dev.sh backend/run_dev.sh
 ## 使用流程
 
 1. 打开前端并确认右上角显示“后端在线”。
-2. 上传 TXT、DOCX 或文本型 PDF。
-3. 在文档表格中查看 chunk、替换或删除文档。
-4. 在问答区域输入与文档相关的问题。
-5. 查看 answer、confidence 和 sources；未配置 Key 时 answer 为离线抽取结果，配置 Key 时为证据约束的 Chat 生成结果。
-6. 切换到“实时语音 Agent”，连接 Agent 后可用文字调试工具调用，也可授权麦克风进行语音对话。
+2. 选择或创建 RAG 数据库，按需编辑该数据库的独立 prompt。
+3. 上传 TXT、DOCX 或文本型 PDF。
+4. 在文档表格中查看 chunk、替换或删除文档。
+5. 在问答区域输入与文档相关的问题。
+6. 查看 answer、confidence 和 sources；未配置 Key 时 answer 为离线抽取结果，配置 Key 时为证据约束的 Chat 生成结果。
+7. 切换到“实时语音 Agent”，连接 Agent 后会绑定当前 RAG 数据库，可用文字调试工具调用，也可授权麦克风进行语音对话。
 
-相同 SHA-256 内容不会重复入库。替换文档会保留 `doc_id`，但重新生成 chunks 和向量。删除会移除数据库记录、原文件并刷新向量索引。
+相同 SHA-256 内容在同一个 RAG 数据库内不会重复入库；同一文件可以上传到不同 RAG 数据库。替换文档会保留 `doc_id`，但重新生成 chunks 和向量。删除会移除数据库记录、原文件并刷新向量索引。
 
 ## API
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/health` | 后端、embedding 模式和向量后端状态 |
-| POST | `/api/documents` | multipart 上传文档 |
-| GET | `/api/documents` | 文档列表 |
-| GET | `/api/documents/{doc_id}` | 文档详情 |
-| GET | `/api/documents/{doc_id}/chunks` | 文档 chunks |
-| PUT | `/api/documents/{doc_id}` | multipart 替换文档 |
-| DELETE | `/api/documents/{doc_id}` | 删除文档 |
+| GET | `/api/rag-databases` | RAG 数据库列表和 prompt |
+| POST | `/api/rag-databases` | 创建 RAG 数据库 |
+| GET | `/api/rag-databases/{database_id}` | RAG 数据库详情 |
+| PUT | `/api/rag-databases/{database_id}/prompt` | 更新指定数据库 prompt |
+| POST | `/api/documents?rag_database_id=...` | multipart 上传文档 |
+| GET | `/api/documents?rag_database_id=...` | 文档列表 |
+| GET | `/api/documents/{doc_id}?rag_database_id=...` | 文档详情 |
+| GET | `/api/documents/{doc_id}/chunks?rag_database_id=...` | 文档 chunks |
+| PUT | `/api/documents/{doc_id}?rag_database_id=...` | multipart 替换文档 |
+| DELETE | `/api/documents/{doc_id}?rag_database_id=...` | 删除文档 |
 | POST | `/api/qa/search` | 向量检索 |
 | POST | `/api/qa/ask` | 检索 + 生成式/离线抽取式问答 |
 | POST | `/api/agent/session` | 创建 Agent session |
@@ -153,12 +159,14 @@ chmod +x run_all_dev.sh backend/run_dev.sh
 | POST | `/api/webrtc/session` | WebRTC 兼容 session，当前返回 WebSocket fallback |
 | POST | `/api/webrtc/offer` | WebRTC 兼容 offer，当前返回 fallback answer |
 
+省略 `rag_database_id` 时，后端使用“默认知识库”，兼容旧调用。
+
 检索示例：
 
 ```bash
 curl -X POST http://localhost:8000/api/qa/search \
   -H 'Content-Type: application/json' \
-  -d '{"query":"设备额定电压是多少","top_k":5}'
+  -d '{"rag_database_id":"default","query":"设备额定电压是多少","top_k":5}'
 ```
 
 问答示例：
@@ -166,7 +174,7 @@ curl -X POST http://localhost:8000/api/qa/search \
 ```bash
 curl -X POST http://localhost:8000/api/qa/ask \
   -H 'Content-Type: application/json' \
-  -d '{"question":"维修前需要做什么","top_k":5}'
+  -d '{"rag_database_id":"default","question":"维修前需要做什么","top_k":5}'
 ```
 
 当最高分低于 `SIMILARITY_THRESHOLD` 时，answer 为“本地知识库未找到可靠依据”，同时仍返回实际检索到的 sources，便于调试阈值。达到阈值但远端 Chat 生成失败时，接口返回 HTTP 502。
