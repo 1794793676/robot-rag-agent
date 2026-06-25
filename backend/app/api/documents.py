@@ -27,11 +27,18 @@ def _translate_error(exc: Exception) -> HTTPException:
 
 
 @router.post("", response_model=DocumentDetail)
-async def upload_document(request: Request, file: UploadFile = File(...)):
+async def upload_document(
+    request: Request,
+    rag_database_id: str | None = None,
+    file: UploadFile = File(...),
+):
     with SessionLocal() as session:
         try:
+            rag_database = request.app.state.rag_database_service.resolve(
+                session, rag_database_id
+            )
             document, duplicate = await request.app.state.document_service.create(
-                session, file
+                session, file, rag_database
             )
             payload = request.app.state.document_service.to_dict(
                 session, document, detail=True
@@ -54,10 +61,14 @@ class ResponseWithStatus(Response):
 
 
 @router.get("", response_model=list[DocumentSummary])
-def list_documents(request: Request):
+def list_documents(request: Request, rag_database_id: str | None = None):
     with SessionLocal() as session:
+        rag_database = request.app.state.rag_database_service.resolve(
+            session, rag_database_id
+        )
         documents = session.scalars(
             select(Document).order_by(Document.created_at.desc())
+            .where(Document.rag_database_id == rag_database.id)
         ).all()
         return [
             request.app.state.document_service.to_dict(session, document)
@@ -66,9 +77,17 @@ def list_documents(request: Request):
 
 
 @router.get("/{doc_id}", response_model=DocumentDetail)
-def get_document(doc_id: str, request: Request):
+def get_document(doc_id: str, request: Request, rag_database_id: str | None = None):
     with SessionLocal() as session:
-        document = session.get(Document, doc_id)
+        rag_database = request.app.state.rag_database_service.resolve(
+            session, rag_database_id
+        )
+        document = session.scalar(
+            select(Document).where(
+                Document.id == doc_id,
+                Document.rag_database_id == rag_database.id,
+            )
+        )
         if not document:
             raise HTTPException(status_code=404, detail="文档不存在")
         return request.app.state.document_service.to_dict(
@@ -78,12 +97,18 @@ def get_document(doc_id: str, request: Request):
 
 @router.put("/{doc_id}", response_model=DocumentDetail)
 async def replace_document(
-    doc_id: str, request: Request, file: UploadFile = File(...)
+    doc_id: str,
+    request: Request,
+    rag_database_id: str | None = None,
+    file: UploadFile = File(...),
 ):
     with SessionLocal() as session:
         try:
+            rag_database = request.app.state.rag_database_service.resolve(
+                session, rag_database_id
+            )
             document = await request.app.state.document_service.replace(
-                session, doc_id, file
+                session, doc_id, file, rag_database
             )
             return request.app.state.document_service.to_dict(
                 session, document, detail=True
@@ -93,11 +118,13 @@ async def replace_document(
 
 
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(doc_id: str, request: Request):
+def delete_document(doc_id: str, request: Request, rag_database_id: str | None = None):
     with SessionLocal() as session:
         try:
-            request.app.state.document_service.delete(session, doc_id)
+            rag_database = request.app.state.rag_database_service.resolve(
+                session, rag_database_id
+            )
+            request.app.state.document_service.delete(session, doc_id, rag_database)
             return Response(status_code=status.HTTP_204_NO_CONTENT)
         except Exception as exc:
             raise _translate_error(exc) from exc
-

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -16,6 +16,9 @@ def utc_now() -> datetime:
 
 class Document(Base):
     __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("rag_database_id", "file_hash", name="uq_documents_database_hash"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     rag_database_id: Mapped[str | None] = mapped_column(
@@ -25,7 +28,7 @@ class Document(Base):
     stored_filename: Mapped[str] = mapped_column(String(512), unique=True)
     file_type: Mapped[str] = mapped_column(String(16))
     file_size: Mapped[int] = mapped_column(Integer)
-    file_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    file_hash: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(32), default="ready")
     parse_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

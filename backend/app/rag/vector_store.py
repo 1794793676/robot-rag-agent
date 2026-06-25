@@ -41,6 +41,10 @@ class VectorStore:
     def backend_name(self) -> str:
         return "hnswlib" if self._hnsw is not None else "numpy"
 
+    @property
+    def record_count(self) -> int:
+        return len(self._records)
+
     def add_vectors(self, records: list[VectorRecord]) -> None:
         self.rebuild([*self._records, *records])
 
@@ -136,4 +140,3 @@ class VectorStore:
                 if path.is_file():
                     path.unlink()
             self.rebuild(records)
-

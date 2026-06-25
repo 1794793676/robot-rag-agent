@@ -10,6 +10,12 @@ def upload_txt(client, name: str, text: str):
     )
 
 
+def create_rag_database(client, name: str, prompt: str = ""):
+    response = client.post("/api/rag-databases", json={"name": name, "prompt": prompt})
+    assert response.status_code == 201
+    return response.json()["rag_database_id"]
+
+
 def test_health(client):
     response = client.get("/health")
     assert response.status_code == 200
@@ -70,6 +76,63 @@ def test_upload_deduplicate_list_and_chunks(client):
     assert chunks.status_code == 200
     assert "核反应堆" in chunks.json()[0]["text"]
     assert chunks.json()[0]["char_count"] > 0
+
+
+def test_documents_and_search_are_scoped_by_rag_database(client):
+    db_a = create_rag_database(client, "A")
+    db_b = create_rag_database(client, "B")
+
+    upload_a = client.post(
+        f"/api/documents?rag_database_id={db_a}",
+        files={"file": ("shared.txt", "A 数据库使用红色电池。".encode(), "text/plain")},
+    )
+    upload_b = client.post(
+        f"/api/documents?rag_database_id={db_b}",
+        files={"file": ("shared.txt", "B 数据库使用蓝色电池。".encode(), "text/plain")},
+    )
+    assert upload_a.status_code == 201
+    assert upload_b.status_code == 201
+
+    list_a = client.get(f"/api/documents?rag_database_id={db_a}").json()
+    list_b = client.get(f"/api/documents?rag_database_id={db_b}").json()
+    assert [item["filename"] for item in list_a] == ["shared.txt"]
+    assert [item["filename"] for item in list_b] == ["shared.txt"]
+    assert list_a[0]["rag_database_id"] == db_a
+    assert list_b[0]["rag_database_id"] == db_b
+
+    search_a = client.post(
+        "/api/qa/search",
+        json={"rag_database_id": db_a, "query": "电池颜色", "top_k": 5},
+    )
+    search_b = client.post(
+        "/api/qa/search",
+        json={"rag_database_id": db_b, "query": "电池颜色", "top_k": 5},
+    )
+    assert search_a.status_code == 200
+    assert search_b.status_code == 200
+    assert "红色电池" in search_a.json()["results"][0]["text"]
+    assert "蓝色电池" in search_b.json()["results"][0]["text"]
+    assert all(result["rag_database_id"] == db_a for result in search_a.json()["results"])
+    assert all(result["rag_database_id"] == db_b for result in search_b.json()["results"])
+
+
+def test_cross_database_document_access_returns_404(client):
+    db_a = create_rag_database(client, "A")
+    db_b = create_rag_database(client, "B")
+    uploaded = client.post(
+        f"/api/documents?rag_database_id={db_a}",
+        files={"file": ("a.txt", "A only".encode(), "text/plain")},
+    ).json()
+
+    assert client.get(
+        f"/api/documents/{uploaded['doc_id']}?rag_database_id={db_b}"
+    ).status_code == 404
+    assert client.get(
+        f"/api/documents/{uploaded['doc_id']}/chunks?rag_database_id={db_b}"
+    ).status_code == 404
+    assert client.delete(
+        f"/api/documents/{uploaded['doc_id']}?rag_database_id={db_b}"
+    ).status_code == 404
 
 
 def test_search_ask_replace_and_delete(client):

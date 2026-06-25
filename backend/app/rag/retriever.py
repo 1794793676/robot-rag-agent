@@ -15,9 +15,12 @@ class Retriever:
         self.embedder = embedder
         self.vector_store = vector_store
 
-    def search(self, session: Session, query: str, top_k: int) -> list[dict]:
+    def search(
+        self, session: Session, query: str, top_k: int, rag_database_id: str | None = None
+    ) -> list[dict]:
         query_vector = self.embedder.embed_text(query)
-        hits = self.vector_store.search(query_vector, top_k)
+        search_k = self.vector_store.record_count if rag_database_id else top_k
+        hits = self.vector_store.search(query_vector, search_k)
         if not hits:
             return []
         scores = dict(hits)
@@ -28,16 +31,24 @@ class Retriever:
             .where(Chunk.id.in_(chunk_ids))
         ).all()
         by_id = {chunk.id: (chunk, document) for chunk, document in rows}
-        return [
-            {
-                "doc_id": by_id[chunk_id][0].document_id,
-                "filename": by_id[chunk_id][1].filename,
-                "chunk_id": chunk_id,
-                "text": by_id[chunk_id][0].text,
-                "score": max(-1.0, min(1.0, scores[chunk_id])),
-                "page": by_id[chunk_id][0].page,
-            }
-            for chunk_id, _ in hits
-            if chunk_id in by_id
-        ]
-
+        results = []
+        for chunk_id, _ in hits:
+            if chunk_id not in by_id:
+                continue
+            chunk, document = by_id[chunk_id]
+            if rag_database_id and document.rag_database_id != rag_database_id:
+                continue
+            results.append(
+                {
+                    "rag_database_id": document.rag_database_id,
+                    "doc_id": chunk.document_id,
+                    "filename": document.filename,
+                    "chunk_id": chunk_id,
+                    "text": chunk.text,
+                    "score": max(-1.0, min(1.0, scores[chunk_id])),
+                    "page": chunk.page,
+                }
+            )
+            if len(results) >= top_k:
+                break
+        return results

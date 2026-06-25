@@ -11,16 +11,19 @@ NonBlankText = Annotated[str, StringConstraints(strip_whitespace=True, min_lengt
 
 
 class SearchRequest(BaseModel):
+    rag_database_id: str | None = Field(default=None, max_length=36)
     query: NonBlankText = Field(max_length=4000)
     top_k: int = Field(default=5, ge=1, le=50)
 
 
 class AskRequest(BaseModel):
+    rag_database_id: str | None = Field(default=None, max_length=36)
     question: NonBlankText = Field(max_length=4000)
     top_k: int = Field(default=5, ge=1, le=50)
 
 
 class SearchResult(BaseModel):
+    rag_database_id: str
     doc_id: str
     filename: str
     chunk_id: str

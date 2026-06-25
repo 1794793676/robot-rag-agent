@@ -14,10 +14,15 @@ router = APIRouter(prefix="/api/qa", tags=["qa"])
 def search(payload: SearchRequest, request: Request):
     with SessionLocal() as session:
         try:
+            rag_database = request.app.state.rag_database_service.resolve(
+                session, payload.rag_database_id
+            )
             results = request.app.state.retriever.search(
-                session, payload.query.strip(), payload.top_k
+                session, payload.query.strip(), payload.top_k, rag_database.id
             )
             return {"query": payload.query, "results": results}
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except EmbeddingError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -26,9 +31,14 @@ def search(payload: SearchRequest, request: Request):
 def ask(payload: AskRequest, request: Request):
     with SessionLocal() as session:
         try:
-            results = request.app.state.retriever.search(
-                session, payload.question.strip(), payload.top_k
+            rag_database = request.app.state.rag_database_service.resolve(
+                session, payload.rag_database_id
             )
+            results = request.app.state.retriever.search(
+                session, payload.question.strip(), payload.top_k, rag_database.id
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except EmbeddingError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 

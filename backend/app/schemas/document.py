@@ -11,6 +11,7 @@ class DocumentSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     doc_id: str
+    rag_database_id: str
     filename: str
     file_type: str
     file_size: int
@@ -31,4 +32,3 @@ class ChunkResponse(BaseModel):
     text: str
     page: int | None
     char_count: int
-

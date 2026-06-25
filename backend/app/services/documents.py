@@ -14,7 +14,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.db.models import Chunk, Document, utc_now
+from app.db.models import Chunk, Document, RagDatabase, utc_now
 from app.rag.chunker import chunk_sections
 from app.rag.embedder import Embedder
 from app.rag.parsers import parse_document
@@ -77,9 +77,16 @@ class DocumentService:
         ]
         self.vector_store.load(records)
 
-    async def create(self, session: Session, upload: UploadFile) -> tuple[Document, bool]:
+    async def create(
+        self, session: Session, upload: UploadFile, rag_database: RagDatabase
+    ) -> tuple[Document, bool]:
         filename, extension, content, digest = await self._read_upload(upload)
-        existing = session.scalar(select(Document).where(Document.file_hash == digest))
+        existing = session.scalar(
+            select(Document).where(
+                Document.file_hash == digest,
+                Document.rag_database_id == rag_database.id,
+            )
+        )
         if existing:
             return existing, True
 
@@ -92,6 +99,7 @@ class DocumentService:
             prepared = self._prepare_chunks(temp_path, extension)
             document = Document(
                 id=doc_id,
+                rag_database_id=rag_database.id,
                 filename=filename,
                 stored_filename=final_name,
                 file_type=extension,
@@ -124,14 +132,20 @@ class DocumentService:
             raise
 
     async def replace(
-        self, session: Session, doc_id: str, upload: UploadFile
+        self, session: Session, doc_id: str, upload: UploadFile, rag_database: RagDatabase
     ) -> Document:
-        document = session.get(Document, doc_id)
+        document = session.scalar(
+            select(Document).where(
+                Document.id == doc_id,
+                Document.rag_database_id == rag_database.id,
+            )
+        )
         if not document:
             raise LookupError("文档不存在")
         filename, extension, content, digest = await self._read_upload(upload)
         conflict = session.scalar(
             select(Document).where(Document.file_hash == digest, Document.id != doc_id)
+            .where(Document.rag_database_id == rag_database.id)
         )
         if conflict:
             raise FileExistsError("相同内容已作为其他文档存在")
@@ -175,8 +189,13 @@ class DocumentService:
             temp_path.unlink(missing_ok=True)
             raise
 
-    def delete(self, session: Session, doc_id: str) -> None:
-        document = session.get(Document, doc_id)
+    def delete(self, session: Session, doc_id: str, rag_database: RagDatabase) -> None:
+        document = session.scalar(
+            select(Document).where(
+                Document.id == doc_id,
+                Document.rag_database_id == rag_database.id,
+            )
+        )
         if not document:
             raise LookupError("文档不存在")
         path = self.settings.files_dir / document.stored_filename
@@ -192,6 +211,7 @@ class DocumentService:
         )
         payload = {
             "doc_id": document.id,
+            "rag_database_id": document.rag_database_id,
             "filename": document.filename,
             "file_type": document.file_type,
             "file_size": document.file_size,
@@ -206,4 +226,3 @@ class DocumentService:
                 parse_message=document.parse_message,
             )
         return payload
-
