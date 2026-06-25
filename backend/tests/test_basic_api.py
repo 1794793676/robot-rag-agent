@@ -170,6 +170,37 @@ def test_search_ask_replace_and_delete(client):
     assert empty.json()["results"] == []
 
 
+def test_ask_uses_selected_database_prompt(client):
+    db_a = create_rag_database(client, "A", "回答必须包含 A_PROMPT_MARKER")
+    db_b = create_rag_database(client, "B", "回答必须包含 B_PROMPT_MARKER")
+    uploaded = client.post(
+        f"/api/documents?rag_database_id={db_a}",
+        files={"file": ("a.txt", "A 文档说明红色电池。".encode(), "text/plain")},
+    )
+    assert uploaded.status_code == 201
+
+    class SpyAnswerer:
+        def __init__(self):
+            self.calls = []
+
+        def answer(self, question, results, prompt=""):
+            self.calls.append({"question": question, "results": results, "prompt": prompt})
+            return f"used:{prompt}"
+
+    spy = SpyAnswerer()
+    client.app.state.answerer = spy
+
+    response = client.post(
+        "/api/qa/ask",
+        json={"rag_database_id": db_a, "question": "电池", "top_k": 3},
+    )
+    assert response.status_code == 200
+    assert response.json()["answer"] == "used:回答必须包含 A_PROMPT_MARKER"
+    assert response.json()["rag_database_id"] == db_a
+    assert spy.calls[0]["prompt"] == "回答必须包含 A_PROMPT_MARKER"
+    assert db_b not in [call["prompt"] for call in spy.calls]
+
+
 def test_ask_maps_answer_generation_error_to_502(client):
     from app.rag.answerer import AnswerGenerationError
 
@@ -182,7 +213,7 @@ def test_ask_maps_answer_generation_error_to_502(client):
     assert uploaded.status_code == 201
 
     class FailingAnswerer:
-        def answer(self, question, results):
+        def answer(self, question, results, prompt=""):
             raise AnswerGenerationError("百炼回答生成失败")
 
     client.app.state.answerer = FailingAnswerer()
@@ -201,7 +232,7 @@ def test_low_confidence_answer_does_not_call_answerer(client):
         def __init__(self):
             self.calls = 0
 
-        def answer(self, question, results):
+        def answer(self, question, results, prompt=""):
             self.calls += 1
             return "不应生成"
 

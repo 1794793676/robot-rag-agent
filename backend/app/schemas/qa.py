@@ -33,6 +33,9 @@ class SearchResult(BaseModel):
 
 
 class SearchResponse(BaseModel):
+    rag_database_id: str
+    rag_database_name: str
+    prompt: str
     query: str
     results: list[SearchResult]
 
@@ -45,6 +48,9 @@ class SourceResponse(BaseModel):
 
 
 class AskResponse(BaseModel):
+    rag_database_id: str
+    rag_database_name: str
+    prompt: str
     answer: str
     confidence: float
     sources: list[SourceResponse]

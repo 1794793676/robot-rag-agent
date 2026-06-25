@@ -21,6 +21,7 @@ from app.rag.retriever import Retriever
 from app.rag.vector_store import VectorRecord, VectorStore
 from app.services.documents import DocumentService
 from app.services.rag_databases import RagDatabaseService
+from app.services.rag_query import RagQueryService
 
 configure_logging()
 settings = get_settings()
@@ -58,6 +59,12 @@ async def lifespan(app: FastAPI):
         else ExtractiveAnswerer()
     )
     app.state.document_service = DocumentService(settings, embedder, vector_store)
+    app.state.rag_query_service = RagQueryService(
+        rag_database_service,
+        app.state.retriever,
+        app.state.answerer,
+        settings.similarity_threshold,
+    )
     yield
 
 

@@ -14,13 +14,12 @@ router = APIRouter(prefix="/api/qa", tags=["qa"])
 def search(payload: SearchRequest, request: Request):
     with SessionLocal() as session:
         try:
-            rag_database = request.app.state.rag_database_service.resolve(
-                session, payload.rag_database_id
+            return request.app.state.rag_query_service.search(
+                session,
+                payload.query.strip(),
+                payload.top_k,
+                payload.rag_database_id,
             )
-            results = request.app.state.retriever.search(
-                session, payload.query.strip(), payload.top_k, rag_database.id
-            )
-            return {"query": payload.query, "results": results}
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except EmbeddingError as exc:
@@ -31,39 +30,16 @@ def search(payload: SearchRequest, request: Request):
 def ask(payload: AskRequest, request: Request):
     with SessionLocal() as session:
         try:
-            rag_database = request.app.state.rag_database_service.resolve(
-                session, payload.rag_database_id
-            )
-            results = request.app.state.retriever.search(
-                session, payload.question.strip(), payload.top_k, rag_database.id
+            request.app.state.rag_query_service.answerer = request.app.state.answerer
+            return request.app.state.rag_query_service.ask(
+                session,
+                payload.question.strip(),
+                payload.top_k,
+                payload.rag_database_id,
             )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except EmbeddingError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    confidence = max((result["score"] for result in results), default=0.0)
-    sources = [
-        {
-            "filename": result["filename"],
-            "page": result["page"],
-            "score": result["score"],
-            "text": result["text"],
-        }
-        for result in results
-    ]
-    if confidence < request.app.state.settings.similarity_threshold:
-        return {
-            "answer": "本地知识库未找到可靠依据",
-            "confidence": confidence,
-            "sources": sources,
-        }
-    try:
-        answer = request.app.state.answerer.answer(payload.question, results)
-    except AnswerGenerationError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {
-        "answer": answer,
-        "confidence": confidence,
-        "sources": sources,
-    }
+        except AnswerGenerationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
