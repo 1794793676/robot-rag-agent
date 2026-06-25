@@ -14,10 +14,15 @@ class ErrorEnvelope(BaseModel):
 
 class AgentSessionResponse(BaseModel):
     session_id: str
+    rag_database_id: str
     mode: Literal["websocket_fallback", "webrtc_direct"]
     websocket_url: str
     model: str
     qwen_webrtc_allowlisted: bool = False
+
+
+class AgentSessionRequest(BaseModel):
+    rag_database_id: str | None = Field(default=None, max_length=36)
 
 
 class WebRTCOfferRequest(BaseModel):

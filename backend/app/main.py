@@ -15,6 +15,7 @@ from app.core.logging import configure_logging
 from app.db.database import SessionLocal, init_db
 from app.db.models import Chunk
 from app.agent.session_state import session_store
+from app.agent.tools import configure_rag_query_service
 from app.rag.answerer import DashScopeAnswerer, ExtractiveAnswerer
 from app.rag.embedder import Embedder
 from app.rag.retriever import Retriever
@@ -65,6 +66,7 @@ async def lifespan(app: FastAPI):
         app.state.answerer,
         settings.similarity_threshold,
     )
+    configure_rag_query_service(app.state.rag_query_service)
     yield
 
 

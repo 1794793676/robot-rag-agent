@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from app.agent.schemas import AgentSessionResponse, AgentToolRequest, AgentToolResponse
+from app.agent.schemas import (
+    AgentSessionRequest,
+    AgentSessionResponse,
+    AgentToolRequest,
+    AgentToolResponse,
+)
 from app.agent.session_state import session_store
 from app.agent.tools import dispatch_tool_call
+from app.db.database import SessionLocal
 from app.webrtc.signaling import create_session
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -18,8 +24,16 @@ tool_log = logging.getLogger("tool_calls")
 
 
 @router.post("/session", response_model=AgentSessionResponse)
-def new_agent_session():
-    payload = create_session()
+def new_agent_session(request: Request, payload: AgentSessionRequest | None = None):
+    requested_database_id = payload.rag_database_id if payload else None
+    with SessionLocal() as session:
+        try:
+            rag_database = request.app.state.rag_database_service.resolve(
+                session, requested_database_id
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    payload = create_session(rag_database.id)
     agent_log.info("session created session=%s transport=%s", payload["session_id"], payload["mode"])
     return payload
 

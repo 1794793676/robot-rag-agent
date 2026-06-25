@@ -8,6 +8,12 @@ import time
 import pytest
 
 
+def create_rag_database(client, name: str, prompt: str = ""):
+    response = client.post("/api/rag-databases", json={"name": name, "prompt": prompt})
+    assert response.status_code == 201
+    return response.json()["rag_database_id"]
+
+
 def test_session_manager_creates_updates_and_expires_sessions(monkeypatch):
     from app.agent.session_state import InMemorySessionStore
 
@@ -135,6 +141,45 @@ def test_agent_session_api_returns_websocket_fallback(client):
     assert payload["mode"] == "websocket_fallback"
     assert payload["websocket_url"] == f"/api/agent/ws/{payload['session_id']}"
     assert payload["model"] == "qwen3.5-omni-flash-realtime"
+
+
+def test_agent_session_stores_selected_rag_database(client):
+    db_a = create_rag_database(client, "Agent DB", "Agent prompt")
+
+    response = client.post("/api/agent/session", json={"rag_database_id": db_a})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["rag_database_id"] == db_a
+
+
+def test_agent_tool_debug_uses_session_bound_rag_database(client):
+    db_a = create_rag_database(client, "Agent A", "A agent prompt")
+    db_b = create_rag_database(client, "Agent B", "B agent prompt")
+    client.post(
+        f"/api/documents?rag_database_id={db_a}",
+        files={"file": ("a.txt", "Agent A 红色电池。".encode(), "text/plain")},
+    )
+    client.post(
+        f"/api/documents?rag_database_id={db_b}",
+        files={"file": ("b.txt", "Agent B 蓝色电池。".encode(), "text/plain")},
+    )
+    session_payload = client.post("/api/agent/session", json={"rag_database_id": db_a}).json()
+
+    response = client.post(
+        "/api/agent/tool",
+        json={
+            "session_id": session_payload["session_id"],
+            "name": "rag_search",
+            "arguments": {"query": "电池", "top_k": 5},
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["rag_database_id"] == db_a
+    assert result["prompt"] == "A agent prompt"
+    assert "红色电池" in result["results"][0]["text"]
 
 
 def test_agent_tool_debug_web_search_degrades_without_key(client, monkeypatch):

@@ -8,8 +8,18 @@ from typing import Any
 
 import httpx
 
+from app.db.database import SessionLocal
 from app.agent.session_state import session_store
 from app.agent.web_search import WebSearchClient
+from app.services.rag_query import RagQueryService
+
+
+_rag_query_service: RagQueryService | None = None
+
+
+def configure_rag_query_service(service: RagQueryService) -> None:
+    global _rag_query_service
+    _rag_query_service = service
 
 
 TOOLS = [
@@ -67,20 +77,28 @@ def normalize_rag_response(payload: dict[str, Any]) -> dict[str, Any]:
     ]
     confidence = max((item["score"] for item in normalized_results), default=0.0)
     return {
+        "rag_database_id": payload.get("rag_database_id", ""),
+        "rag_database_name": payload.get("rag_database_name", ""),
+        "prompt": payload.get("prompt", ""),
         "matched": bool(normalized_results) and confidence > 0,
         "confidence": confidence,
         "results": normalized_results,
     }
 
 
-async def rag_search(query: str, top_k: int = 5) -> dict[str, Any]:
+async def rag_search(
+    query: str, top_k: int = 5, rag_database_id: str | None = None
+) -> dict[str, Any]:
     top_k = max(1, min(int(top_k or 5), 10))
+    if _rag_query_service is not None:
+        with SessionLocal() as session:
+            return _rag_query_service.agent_search(session, query, top_k, rag_database_id)
     base_url = os.getenv("RAG_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
                 f"{base_url}/api/qa/search",
-                json={"query": query, "top_k": top_k},
+                json={"query": query, "top_k": top_k, "rag_database_id": rag_database_id},
             )
             response.raise_for_status()
             return normalize_rag_response(response.json())
@@ -103,6 +121,7 @@ async def get_session_context(session_id: str) -> dict[str, Any]:
         return {"matched": False, "error": {"code": "SESSION_NOT_FOUND", "message": "Session not found"}}
     return {
         "session_id": state.session_id,
+        "rag_database_id": state.rag_database_id,
         "current_response_id": state.current_response_id,
         "is_agent_speaking": state.is_agent_speaking,
         "is_user_speaking": state.is_user_speaking,
@@ -117,7 +136,12 @@ async def dispatch_tool_call(name: str, arguments: dict[str, Any], session_id: s
     if state:
         state.last_tool_call = {"name": name, "arguments": arguments}
     if name == "rag_search":
-        result = await rag_search(arguments["query"], arguments.get("top_k", 5))
+        selected_database_id = arguments.get("rag_database_id") or (
+            state.rag_database_id if state else None
+        )
+        result = await rag_search(
+            arguments["query"], arguments.get("top_k", 5), selected_database_id
+        )
         if state:
             state.last_rag_results = result.get("results", [])
         return result
@@ -133,4 +157,3 @@ async def dispatch_tool_call(name: str, arguments: dict[str, Any], session_id: s
 
 def tool_result_to_output(result: dict[str, Any]) -> str:
     return json.dumps(result, ensure_ascii=False)
-

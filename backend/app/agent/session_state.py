@@ -11,6 +11,7 @@ from uuid import uuid4
 @dataclass
 class AgentSessionState:
     session_id: str
+    rag_database_id: str | None = None
     current_response_id: str | None = None
     is_agent_speaking: bool = False
     is_user_speaking: bool = False
@@ -27,7 +28,9 @@ class AgentSessionState:
 
 
 class SessionStore(Protocol):
-    def create(self, session_id: str | None = None) -> AgentSessionState: ...
+    def create(
+        self, session_id: str | None = None, rag_database_id: str | None = None
+    ) -> AgentSessionState: ...
     def get(self, session_id: str) -> AgentSessionState | None: ...
     def touch(self, session_id: str) -> AgentSessionState | None: ...
     def delete(self, session_id: str) -> None: ...
@@ -41,9 +44,11 @@ class InMemorySessionStore:
         self.ttl_seconds = ttl_seconds
         self._sessions: dict[str, AgentSessionState] = {}
 
-    def create(self, session_id: str | None = None) -> AgentSessionState:
+    def create(
+        self, session_id: str | None = None, rag_database_id: str | None = None
+    ) -> AgentSessionState:
         sid = session_id or f"sess_{uuid4().hex}"
-        state = AgentSessionState(session_id=sid)
+        state = AgentSessionState(session_id=sid, rag_database_id=rag_database_id)
         self._sessions[sid] = state
         return state
 
@@ -72,4 +77,3 @@ class InMemorySessionStore:
 
 
 session_store = InMemorySessionStore()
-
