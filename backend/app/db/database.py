@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.config import get_settings
@@ -36,4 +36,27 @@ def init_db() -> None:
     from app.db import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _migrate_documents_rag_database_id()
 
+
+def _migrate_documents_rag_database_id() -> None:
+    """Add database ownership to existing local SQLite databases."""
+
+    with engine.begin() as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            )
+        }
+        if "documents" not in tables:
+            return
+        columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(documents)"))
+        }
+        if "rag_database_id" not in columns:
+            connection.execute(text("ALTER TABLE documents ADD COLUMN rag_database_id VARCHAR(36)"))
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_documents_rag_database_id ON documents (rag_database_id)")
+            )

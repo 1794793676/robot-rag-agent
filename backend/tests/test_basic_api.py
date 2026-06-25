@@ -16,6 +16,35 @@ def test_health(client):
     assert response.json()["status"] == "ok"
 
 
+def test_rag_databases_default_and_independent_prompts(client):
+    databases = client.get("/api/rag-databases")
+    assert databases.status_code == 200
+    payload = databases.json()
+    assert len(payload) == 1
+    default_db = payload[0]
+    assert default_db["is_default"] is True
+    assert default_db["name"] == "默认知识库"
+    assert default_db["prompt"] == ""
+
+    a = client.post("/api/rag-databases", json={"name": "A", "prompt": "只用 A 口吻回答"})
+    b = client.post("/api/rag-databases", json={"name": "B", "prompt": "只用 B 口吻回答"})
+    assert a.status_code == 201
+    assert b.status_code == 201
+
+    db_a = a.json()
+    db_b = b.json()
+    update = client.put(
+        f"/api/rag-databases/{db_a['rag_database_id']}/prompt",
+        json={"prompt": "A prompt updated"},
+    )
+    assert update.status_code == 200
+    assert update.json()["prompt"] == "A prompt updated"
+
+    fetched_b = client.get(f"/api/rag-databases/{db_b['rag_database_id']}")
+    assert fetched_b.status_code == 200
+    assert fetched_b.json()["prompt"] == "只用 B 口吻回答"
+
+
 def test_upload_deduplicate_list_and_chunks(client):
     text = "火星基地的能源系统使用小型核反应堆。\n\n备用能源来自太阳能阵列。"
     created = upload_txt(client, "mars.txt", text)

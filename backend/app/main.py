@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
-from app.api import agent_api, chunks, documents, qa, webrtc_api
+from app.api import agent_api, chunks, documents, qa, rag_databases, webrtc_api
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.database import SessionLocal, init_db
@@ -20,6 +20,7 @@ from app.rag.embedder import Embedder
 from app.rag.retriever import Retriever
 from app.rag.vector_store import VectorRecord, VectorStore
 from app.services.documents import DocumentService
+from app.services.rag_databases import RagDatabaseService
 
 configure_logging()
 settings = get_settings()
@@ -29,6 +30,9 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     settings.ensure_directories()
     init_db()
+    rag_database_service = RagDatabaseService()
+    with SessionLocal() as session:
+        rag_database_service.ensure_default(session)
     embedder = Embedder(settings)
     vector_store = VectorStore(settings.embedding_dim, settings.index_dir)
     with SessionLocal() as session:
@@ -44,6 +48,7 @@ async def lifespan(app: FastAPI):
     vector_store.load(records)
     app.state.settings = settings
     session_store.ttl_seconds = settings.session_ttl_seconds
+    app.state.rag_database_service = rag_database_service
     app.state.embedder = embedder
     app.state.vector_store = vector_store
     app.state.retriever = Retriever(embedder, vector_store)
@@ -66,6 +71,7 @@ app.add_middleware(
 )
 app.include_router(documents.router)
 app.include_router(chunks.router)
+app.include_router(rag_databases.router)
 app.include_router(qa.router)
 app.include_router(agent_api.router)
 app.include_router(webrtc_api.router)

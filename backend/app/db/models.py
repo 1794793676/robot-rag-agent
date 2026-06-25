@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -18,6 +18,9 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    rag_database_id: Mapped[str | None] = mapped_column(
+        ForeignKey("rag_databases.id", ondelete="CASCADE"), index=True, nullable=True
+    )
     filename: Mapped[str] = mapped_column(String(512))
     stored_filename: Mapped[str] = mapped_column(String(512), unique=True)
     file_type: Mapped[str] = mapped_column(String(16))
@@ -33,6 +36,22 @@ class Document(Base):
     chunks: Mapped[list["Chunk"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
+    rag_database: Mapped["RagDatabase | None"] = relationship(back_populates="documents")
+
+
+class RagDatabase(Base):
+    __tablename__ = "rag_databases"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    prompt: Mapped[str] = mapped_column(Text, default="")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    documents: Mapped[list[Document]] = relationship(back_populates="rag_database")
 
 
 class Chunk(Base):
@@ -49,4 +68,3 @@ class Chunk(Base):
     embedding: Mapped[bytes] = mapped_column(LargeBinary)
 
     document: Mapped[Document] = relationship(back_populates="chunks")
-
