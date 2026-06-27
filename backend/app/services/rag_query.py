@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Literal
 
 from sqlalchemy.orm import Session
@@ -11,6 +12,8 @@ from app.rag.answerer import Answerer
 from app.rag.reranker import Reranker
 from app.rag.retriever import Retriever
 from app.services.rag_databases import RagDatabaseService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,11 @@ class RagQueryService:
                 [str(candidate.get("text") or "") for candidate in candidates],
                 min(top_k, len(candidates)),
             )
+            if rerank_result.degraded:
+                logger.warning(
+                    "RAG reranking degraded: error_code=%s",
+                    rerank_result.error_code or "RERANK_UNKNOWN",
+                )
 
         rerank_succeeded = bool(
             rerank_result

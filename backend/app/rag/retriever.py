@@ -19,8 +19,22 @@ class Retriever:
         self, session: Session, query: str, top_k: int, rag_database_id: str | None = None
     ) -> list[dict]:
         query_vector = self.embedder.embed_text(query)
-        search_k = self.vector_store.record_count if rag_database_id else top_k
-        hits = self.vector_store.search(query_vector, search_k)
+        allowed_chunk_ids = None
+        if rag_database_id:
+            allowed_chunk_ids = set(
+                session.scalars(
+                    select(Chunk.id)
+                    .join(Document, Chunk.document_id == Document.id)
+                    .where(Document.rag_database_id == rag_database_id)
+                ).all()
+            )
+            if not allowed_chunk_ids:
+                return []
+        hits = self.vector_store.search(
+            query_vector,
+            top_k,
+            allowed_chunk_ids=allowed_chunk_ids,
+        )
         if not hits:
             return []
         scores = dict(hits)

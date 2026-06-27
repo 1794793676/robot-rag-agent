@@ -123,6 +123,53 @@ def test_degraded_rerank_preserves_vector_order_and_threshold():
     assert payload["decision_threshold"] == 0.35
 
 
+def test_degraded_rerank_logs_only_error_code(caplog):
+    service, _, _ = build_service(
+        [candidate("a", "db-a", 0.40)],
+        RerankResult(
+            items=[], applied=True, degraded=True, error_code="RERANK_TIMEOUT"
+        ),
+    )
+
+    service.search(None, "secret query", top_k=1, rag_database_id="db-a")
+
+    assert "RERANK_TIMEOUT" in caplog.text
+    assert "secret query" not in caplog.text
+
+
+def test_threshold_equality_is_a_match():
+    service, _, _ = build_service(
+        [candidate("a", "db-a", 0.35)],
+        RerankResult(items=[], applied=False, degraded=False),
+    )
+
+    assert service.search(None, "q", 1, "db-a")["matched"] is True
+
+
+def test_no_candidates_returns_vector_no_match_without_reranking():
+    service, _, reranker = build_service(
+        [], RerankResult(items=[], applied=True, degraded=False)
+    )
+
+    payload = service.search(None, "q", 5, "db-a")
+
+    assert payload["matched"] is False
+    assert payload["candidate_count"] == 0
+    assert payload["retrieval_mode"] == "vector"
+    assert reranker.calls == []
+
+
+def test_requested_top_k_larger_than_candidate_k_controls_retrieval_width():
+    service, retriever, _ = build_service(
+        [candidate("a", "db-a", 0.40)],
+        RerankResult(items=[], applied=False, degraded=False),
+    )
+
+    service.search(None, "q", 40, "db-a")
+
+    assert retriever.calls[0]["top_k"] == 40
+
+
 def test_ask_and_agent_search_share_search_match_decision():
     service, _, _ = build_service(
         [candidate("a", "db-a", 0.90)],
