@@ -66,7 +66,7 @@ When the selected database changes while the Agent is connected:
 8. Connect the new WebSocket.
 9. Re-enable input only after the backend confirms the new session and database binding.
 
-The frontend assigns an epoch to every connection. Events are accepted only when both the connection epoch and `rag_database_id` match the current connection. Late events from the old connection are discarded.
+Every connection has a backend-generated `connection_id` in addition to its `session_id`. The frontend stores both values and accepts events only when `session_id`, `connection_id`, and `rag_database_id` all match the active connection. Late events from the old connection are discarded.
 
 If reconnection fails, the selected database remains changed, the Agent stays disconnected, and the UI presents an explicit retry action. It must not silently continue using the old database.
 
@@ -83,6 +83,15 @@ The session-bound ID is authoritative:
 - Missing or deleted databases produce a structured error and stop the turn.
 
 This prevents a prompt from one database from being combined with documents from another database.
+
+`AgentSessionState` also stores:
+
+- `connection_id`
+- `status`, including `active`, `switching`, `cancelled`, and `closed`
+- `current_turn_id`
+- cancellation state for the current turn
+
+Closing a connection marks its session and current turn `cancelled` before closing the upstream Qwen connection. A cancelled or closed session cannot accept new input or create a response.
 
 ## Backend Turn Orchestrator
 
@@ -101,6 +110,15 @@ It performs:
 4. Decide whether local RAG matched.
 5. Build generation instructions and evidence.
 6. Trigger the Realtime response only after the preceding stages complete.
+
+Before consuming the result of transcription, retrieval, or reranking, and immediately before sending `response.create`, the orchestrator verifies that:
+
+- The session still exists and has status `active`.
+- The event `connection_id` equals the session's current `connection_id`.
+- The turn ID equals `current_turn_id`.
+- The turn is not cancelled.
+
+Failure of any check makes the operation a stale no-op. It must not update session sources, emit a generation event, or trigger Qwen output.
 
 The existing `RagQueryService` remains the shared retrieval boundary for QA and Agent use. Reranking is inserted into this shared backend path so QA testing and Agent answers do not diverge.
 
@@ -188,6 +206,14 @@ Vector similarity and rerank relevance are separate fields:
 
 `RERANK_THRESHOLD` controls the match decision after successful reranking. `SIMILARITY_THRESHOLD` remains the fallback threshold when rerank is disabled or unavailable. The two thresholds are not interchangeable.
 
+The backend owns the single match decision:
+
+- Successful rerank: matched when the highest `rerank_score >= RERANK_THRESHOLD`.
+- Rerank disabled or degraded: matched when the highest `vector_score >= SIMILARITY_THRESHOLD`.
+- No candidates: not matched.
+
+QA and Agent use this same decision. The former Agent behavior of treating any positive score as matched and the prompt-only `0.55/0.75` bands are removed.
+
 Rerank is enabled by default when `DASHSCOPE_API_KEY` is configured. It uses the Singapore-compatible endpoint and the same API key as embedding, Chat, and Realtime. Without an API key, tests and local development use vector ordering rather than making a network call.
 
 Configuration:
@@ -224,6 +250,8 @@ RAG search and Agent retrieval payloads add:
 
 Agent lifecycle events add:
 
+- `session_id`
+- `connection_id`
 - `turn_id`
 - `rag_database_id`
 - Retrieval stage events for `transcribing`, `retrieving`, `reranking`, and `generating`.
@@ -233,6 +261,7 @@ Structured errors have stable codes for missing sessions, missing databases, tra
 ## Error Handling
 
 - Invalid or deleted database: stop the turn; do not fall back to the default database.
+- Closed or cancelled session: reject new input and emit no downstream work.
 - Empty transcription: do not retrieve or generate; return to listening.
 - Retrieval failure: return an explicit error; do not bypass RAG and generate.
 - Rerank failure: fall back to vector ordering and expose degradation metadata.
@@ -245,6 +274,8 @@ Structured errors have stable codes for missing sessions, missing databases, tra
 ### Backend Unit Tests
 
 - Session database ID is authoritative and cannot be overridden by tool arguments.
+- Closing a connection marks its session and current turn cancelled.
+- Cancelled sessions reject new input and cannot trigger `response.create`.
 - Candidate retrieval includes only chunks from the session database.
 - Rerank response indexes map back to the correct chunk metadata.
 - Successful reranking changes ordering and uses `RERANK_THRESHOLD`.
@@ -260,6 +291,8 @@ Structured errors have stable codes for missing sessions, missing databases, tra
 - A RAG miss is the only path that enables web or direct-answer fallback.
 - Interruption during retrieval invalidates the old turn.
 - Interruption during generation cancels the response and clears output.
+- Completion of transcription, retrieval, or reranking after cancellation is a no-op.
+- The pre-`response.create` current-turn check prevents generation after cancellation.
 
 ### Frontend Tests
 
@@ -267,7 +300,7 @@ Structured errors have stable codes for missing sessions, missing databases, tra
 - Switching while connected disconnects and reconnects with the selected ID.
 - Input is disabled during switching.
 - Failed reconnection never resumes the old connection.
-- Events from an old connection epoch or database are ignored.
+- Events whose `session_id`, `connection_id`, or database differs from the active connection are ignored.
 - Current database, pipeline stage, rerank state, and degradation state are displayed.
 
 ### Integration Tests
