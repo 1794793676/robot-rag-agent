@@ -41,6 +41,7 @@ def test_dashscope_reranker_sends_payload_and_maps_scores() -> None:
     result = reranker.rerank("where?", ["first", "second"], 2)
 
     request = seen["request"]
+    assert str(request.url) == "https://example.test/reranks"
     assert request.headers["Authorization"] == "Bearer secret"
     assert seen["payload"] == {
         "model": "qwen3-rerank",
@@ -56,6 +57,28 @@ def test_dashscope_reranker_sends_payload_and_maps_scores() -> None:
     assert result.applied is True
     assert result.degraded is False
     assert result.error_code is None
+
+
+def test_dashscope_reranker_passes_url_and_timeout_to_injected_client() -> None:
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.call: dict = {}
+
+        def post(self, url: str, **kwargs) -> httpx.Response:
+            self.call = {"url": url, **kwargs}
+            return httpx.Response(
+                200,
+                json={"output": {"results": []}},
+                request=httpx.Request("POST", url),
+            )
+
+    client = RecordingClient()
+
+    result = DashScopeReranker(_settings(), client=client).rerank("q", ["doc"], 1)
+
+    assert result.degraded is False
+    assert client.call["url"] == "https://example.test/reranks"
+    assert client.call["timeout"] == 1.25
 
 
 def test_dashscope_reranker_degrades_on_timeout() -> None:
@@ -85,6 +108,42 @@ def test_dashscope_reranker_degrades_on_timeout() -> None:
         ),
         (
             httpx.Response(200, json={"output": {"results": "not-a-list"}}),
+            "RERANK_INVALID_RESPONSE",
+        ),
+        (
+            httpx.Response(200, json={"output": {"results": [{"index": 0}]}}),
+            "RERANK_INVALID_RESPONSE",
+        ),
+        (
+            httpx.Response(
+                200,
+                json={
+                    "output": {
+                        "results": [{"index": 0, "relevance_score": "high"}]
+                    }
+                },
+            ),
+            "RERANK_INVALID_RESPONSE",
+        ),
+        (
+            httpx.Response(
+                200,
+                content=(
+                    b'{"output":{"results":'
+                    b'[{"index":0,"relevance_score":Infinity}]}}'
+                ),
+            ),
+            "RERANK_INVALID_RESPONSE",
+        ),
+        (
+            httpx.Response(
+                200,
+                json={
+                    "output": {
+                        "results": [{"index": 0, "relevance_score": 10**400}]
+                    }
+                },
+            ),
             "RERANK_INVALID_RESPONSE",
         ),
     ],

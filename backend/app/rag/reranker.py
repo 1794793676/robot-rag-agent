@@ -71,7 +71,10 @@ class DashScopeReranker:
         try:
             if self.client is not None:
                 response = self.client.post(
-                    self.settings.rerank_base_url, headers=headers, json=payload
+                    self.settings.rerank_base_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.settings.rerank_timeout_seconds,
                 )
             else:
                 with httpx.Client(
@@ -109,7 +112,7 @@ class DashScopeReranker:
                 items.append(
                     RerankItem(index=index, score=max(0.0, min(1.0, float(score))))
                 )
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, OverflowError, TypeError, ValueError):
             return self._degraded("RERANK_INVALID_RESPONSE")
 
         return RerankResult(items=items, applied=True, degraded=False)

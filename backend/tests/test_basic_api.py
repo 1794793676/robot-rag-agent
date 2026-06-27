@@ -28,6 +28,12 @@ def test_health(client):
     assert payload["rerank_mode"] == "disabled"
 
 
+def test_disabled_reranker_is_constructed_when_setting_is_disabled(client):
+    from app.rag.reranker import DisabledReranker
+
+    assert isinstance(client.app.state.reranker, DisabledReranker)
+
+
 def test_rerank_settings_defaults(monkeypatch):
     from app.core.config import Settings
 
