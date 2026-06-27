@@ -17,6 +17,34 @@ def _settings(**overrides) -> Settings:
     )
 
 
+def test_build_reranker_selects_dashscope_when_enabled() -> None:
+    from app import main
+
+    reranker = main._build_reranker(
+        Settings(
+            _env_file=None,
+            dashscope_api_key="test-key",
+            rerank_enabled=True,
+        )
+    )
+
+    assert isinstance(reranker, DashScopeReranker)
+
+
+def test_build_reranker_selects_disabled_when_not_enabled() -> None:
+    from app import main
+
+    reranker = main._build_reranker(
+        Settings(
+            _env_file=None,
+            dashscope_api_key="test-key",
+            rerank_enabled=False,
+        )
+    )
+
+    assert isinstance(reranker, DisabledReranker)
+
+
 def test_dashscope_reranker_sends_payload_and_maps_scores() -> None:
     seen: dict = {}
 

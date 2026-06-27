@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from app.api import agent_api, chunks, documents, qa, rag_databases, webrtc_api
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.db.database import SessionLocal, init_db
 from app.db.models import Chunk
@@ -18,7 +18,7 @@ from app.agent.session_state import session_store
 from app.agent.tools import configure_rag_query_service
 from app.rag.answerer import DashScopeAnswerer, ExtractiveAnswerer
 from app.rag.embedder import Embedder
-from app.rag.reranker import DashScopeReranker, DisabledReranker
+from app.rag.reranker import DashScopeReranker, DisabledReranker, Reranker
 from app.rag.retriever import Retriever
 from app.rag.vector_store import VectorRecord, VectorStore
 from app.services.documents import DocumentService
@@ -27,6 +27,12 @@ from app.services.rag_query import RagQueryService
 
 configure_logging()
 settings = get_settings()
+
+
+def _build_reranker(reranker_settings: Settings) -> Reranker:
+    if reranker_settings.rerank_is_enabled:
+        return DashScopeReranker(reranker_settings)
+    return DisabledReranker()
 
 
 @asynccontextmanager
@@ -55,11 +61,7 @@ async def lifespan(app: FastAPI):
     app.state.embedder = embedder
     app.state.vector_store = vector_store
     app.state.retriever = Retriever(embedder, vector_store)
-    app.state.reranker = (
-        DashScopeReranker(settings)
-        if settings.rerank_is_enabled
-        else DisabledReranker()
-    )
+    app.state.reranker = _build_reranker(settings)
     app.state.answerer = (
         DashScopeAnswerer(settings)
         if settings.dashscope_api_key
