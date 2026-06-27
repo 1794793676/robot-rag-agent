@@ -55,6 +55,18 @@ def test_session_lifecycle_tracks_connection_and_current_turn():
     assert store.is_current("sess_1", state.connection_id, turn.turn_id) is False
     assert store.is_current("sess_1", "conn_stale", next_turn.turn_id) is False
     assert store.is_current("sess_stale", state.connection_id, next_turn.turn_id) is False
+    assert (
+        store.is_current_and_bound(
+            "sess_1", state.connection_id, next_turn.turn_id, "database_a"
+        )
+        is True
+    )
+    assert (
+        store.is_current_and_bound(
+            "sess_1", state.connection_id, next_turn.turn_id, "database_b"
+        )
+        is False
+    )
 
 
 def test_session_cancellation_and_close_invalidate_current_turn():

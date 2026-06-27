@@ -51,6 +51,13 @@ class SessionStore(Protocol):
     def cancel_session(self, session_id: str) -> AgentSessionState | None: ...
     def close_session(self, session_id: str) -> AgentSessionState | None: ...
     def is_current(self, session_id: str, connection_id: str, turn_id: str) -> bool: ...
+    def is_current_and_bound(
+        self,
+        session_id: str,
+        connection_id: str,
+        turn_id: str,
+        rag_database_id: str,
+    ) -> bool: ...
     def delete(self, session_id: str) -> None: ...
     def cleanup_expired(self) -> int: ...
 
@@ -136,6 +143,25 @@ class InMemorySessionStore:
                 state
                 and state.status == "active"
                 and state.connection_id == connection_id
+                and state.current_turn
+                and state.current_turn.turn_id == turn_id
+                and not state.current_turn.cancelled
+            )
+
+    def is_current_and_bound(
+        self,
+        session_id: str,
+        connection_id: str,
+        turn_id: str,
+        rag_database_id: str,
+    ) -> bool:
+        with self._lock:
+            state = self._sessions.get(session_id)
+            return bool(
+                state
+                and state.status == "active"
+                and state.connection_id == connection_id
+                and state.rag_database_id == rag_database_id
                 and state.current_turn
                 and state.current_turn.turn_id == turn_id
                 and not state.current_turn.cancelled
