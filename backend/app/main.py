@@ -23,6 +23,7 @@ from app.rag.retriever import Retriever
 from app.rag.vector_store import VectorRecord, VectorStore
 from app.services.documents import DocumentService
 from app.services.rag_databases import RagDatabaseService
+from app.services.rag_first_turn import RagFirstTurnOrchestrator
 from app.services.rag_query import RagQueryService
 
 configure_logging()
@@ -76,6 +77,11 @@ async def lifespan(app: FastAPI):
         similarity_threshold=settings.similarity_threshold,
         rerank_threshold=settings.rerank_threshold,
         candidate_k=settings.rerank_candidate_k,
+    )
+    app.state.rag_first_turn_orchestrator = RagFirstTurnOrchestrator(
+        session_store,
+        app.state.rag_query_service,
+        SessionLocal,
     )
     configure_rag_query_service(app.state.rag_query_service)
     yield
