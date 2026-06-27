@@ -222,12 +222,23 @@ Configuration:
 - `RERANK_MODEL=qwen3-rerank`
 - `RERANK_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-api/v1/reranks`
 - `RERANK_CANDIDATE_K=30`
-- `RERANK_THRESHOLD`
+- `RERANK_THRESHOLD=0.50`
 - `RERANK_TIMEOUT_SECONDS`
 
 Failures, timeouts, malformed responses, and rate limits fall back to vector ordering for the same already-scoped candidates. They are logged and reported as degradation metadata; they do not fail the Agent turn.
 
 No chunk from another database may be sent to the rerank API.
+
+`SIMILARITY_THRESHOLD` remains exposed and defaults to `0.35`.
+
+Both active thresholds are exposed through:
+
+- `.env.example` and runtime settings.
+- `GET /health`, including the effective numeric values.
+- RAG search debug metadata, including which threshold and score type made the match decision.
+- The Agent retrieval panel, which displays the effective score, threshold, and decision mode.
+
+The initial rerank default of `0.50` is a deployment baseline, not a universal quality guarantee. It must be calibrated with the evaluation set described below before production use.
 
 ## API and Event Changes
 
@@ -236,6 +247,8 @@ No chunk from another database may be sent to the rerank API.
 - `rerank_enabled`
 - `rerank_model`
 - `rerank_mode`
+- `rerank_threshold`
+- `similarity_threshold`
 
 RAG search and Agent retrieval payloads add:
 
@@ -245,6 +258,9 @@ RAG search and Agent retrieval payloads add:
 - `candidate_count`
 - `rerank_applied`
 - `rerank_degraded`
+- `decision_score`
+- `decision_threshold`
+- `decision_score_type`
 - `results[].vector_score`
 - `results[].rerank_score`
 
@@ -316,6 +332,65 @@ Create databases A and B with different prompts and documents:
 
 Tests use deterministic fake embedding and fake rerank responses. Automated tests do not require a live DashScope key.
 
+### Retrieval Evaluation Set
+
+Add a versioned offline evaluation dataset under `backend/tests/fixtures/rag_eval/`. Each case contains:
+
+- Stable case ID.
+- Target `rag_database_id`.
+- Query.
+- `answerable`: whether the selected database contains enough evidence.
+- Relevant document and chunk IDs for answerable cases.
+- Optional expected answer facts for manual answer-quality inspection.
+- Category tags such as paraphrase, exact term, table, multi-chunk, ambiguous, unrelated, and cross-database negative.
+
+The dataset must include:
+
+- Positive queries with direct wording.
+- Positive paraphrases that do not share exact keywords.
+- Difficult positives whose evidence appears below the original vector top-k.
+- Negative queries unrelated to all documents.
+- Hard negatives that are topically similar but not answered by the documents.
+- Cross-database negatives where another database contains an answer but the selected database does not.
+
+The first committed dataset must contain at least 100 cases, with at least 40 negative cases and at least 20 cross-database negative cases. Fixture documents and expected labels are committed so the run is repeatable.
+
+Run the same cases in two modes:
+
+1. Vector-only baseline using `SIMILARITY_THRESHOLD=0.35`.
+2. Vector retrieval plus `qwen3-rerank` using `RERANK_THRESHOLD=0.50`.
+
+The evaluator writes JSON and Markdown reports containing per-case decisions, candidate ranks, scores, thresholds, aggregate metrics, model/configuration identifiers, and comparison deltas. Live rerank evaluation is an explicit integration command requiring `DASHSCOPE_API_KEY`; deterministic fake-rerank tests remain part of the normal test suite.
+
+### Evaluation Metrics
+
+For the match decision:
+
+- `TP`: answerable query accepted with at least one labeled relevant chunk in final top-k.
+- `FP`: unanswerable query accepted.
+- `FN`: answerable query rejected, or accepted without a labeled relevant chunk in final top-k.
+- `TN`: unanswerable query rejected.
+
+Report:
+
+- Hit rate: `TP / (TP + FN)`.
+- False-hit rate: `FP / (FP + TN)`.
+- False-rejection rate: `FN / (TP + FN)`.
+
+Also report `Precision@K`, `Recall@K`, and `MRR` to distinguish threshold quality from ranking quality. All metrics are reported overall and by category, especially cross-database negatives.
+
+Threshold calibration evaluates a fixed grid without changing labels:
+
+- `SIMILARITY_THRESHOLD`: `0.25` through `0.60` in `0.05` increments.
+- `RERANK_THRESHOLD`: `0.30` through `0.80` in `0.05` increments.
+
+The report identifies the threshold pairs that satisfy both:
+
+- False-hit rate `<= 5%`.
+- False-rejection rate `<= 15%`.
+
+Among satisfying pairs, select the one with the highest hit rate; break ties using higher MRR, then lower false-hit rate. If no pair satisfies both limits, keep the documented defaults and mark calibration as failed rather than silently selecting a weaker operating point.
+
 ## Documentation
 
 Update:
@@ -348,8 +423,10 @@ The documentation must explicitly identify SQLite (`storage/rag.db`) as metadata
 - The first turn after reconnect uses the newly selected database.
 - Old connection and turn events cannot affect the new session.
 - `qwen3-rerank` uses the existing DashScope API key when enabled.
+- The effective `RERANK_THRESHOLD=0.50` and `SIMILARITY_THRESHOLD=0.35` defaults are visible in configuration, health output, and retrieval diagnostics.
 - Rerank improves final ordering while preserving database isolation.
 - Rerank failure degrades to vector ordering without bypassing RAG-first.
+- A versioned evaluation set produces hit-rate, false-hit-rate, false-rejection-rate, Precision@K, Recall@K, and MRR reports for vector-only and reranked retrieval.
 - Realtime voice input, streamed text/audio output, and interruption continue to work.
 - Health, retrieval results, and the Agent UI expose rerank and degradation state.
 - Existing document management and QA behavior remain compatible.
