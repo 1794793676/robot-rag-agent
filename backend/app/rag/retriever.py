@@ -45,6 +45,8 @@ class Retriever:
                     "filename": document.filename,
                     "chunk_id": chunk_id,
                     "text": chunk.text,
+                    "vector_score": max(-1.0, min(1.0, scores[chunk_id])),
+                    "rerank_score": None,
                     "score": max(-1.0, min(1.0, scores[chunk_id])),
                     "page": chunk.page,
                 }

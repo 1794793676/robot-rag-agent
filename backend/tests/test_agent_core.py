@@ -180,6 +180,9 @@ def test_agent_tool_debug_uses_session_bound_rag_database(client):
     assert result["rag_database_id"] == db_a
     assert result["prompt"] == "A agent prompt"
     assert "红色电池" in result["results"][0]["text"]
+    assert result["matched"] is True
+    assert result["confidence"] == result["decision_score"]
+    assert result["decision_score_type"] == "vector"
 
 
 def test_agent_tool_debug_web_search_degrades_without_key(client, monkeypatch):

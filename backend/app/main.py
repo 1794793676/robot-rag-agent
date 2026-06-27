@@ -72,7 +72,10 @@ async def lifespan(app: FastAPI):
         rag_database_service,
         app.state.retriever,
         app.state.answerer,
-        settings.similarity_threshold,
+        app.state.reranker,
+        similarity_threshold=settings.similarity_threshold,
+        rerank_threshold=settings.rerank_threshold,
+        candidate_k=settings.rerank_candidate_k,
     )
     configure_rag_query_service(app.state.rag_query_service)
     yield

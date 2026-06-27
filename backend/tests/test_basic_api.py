@@ -175,13 +175,22 @@ def test_search_ask_replace_and_delete(client):
 
     search = client.post("/api/qa/search", json={"query": "机器人电池电压是多少", "top_k": 3})
     assert search.status_code == 200
-    assert search.json()["results"][0]["doc_id"] == doc_id
-    assert "四十八伏" in search.json()["results"][0]["text"]
+    search_payload = search.json()
+    assert search_payload["results"][0]["doc_id"] == doc_id
+    assert "四十八伏" in search_payload["results"][0]["text"]
+    assert search_payload["decision_score_type"] == "vector"
+    assert search_payload["decision_threshold"] == 0.15
+    assert search_payload["rerank_applied"] is False
+    assert search_payload["rerank_degraded"] is False
+    assert search_payload["results"][0]["vector_score"] is not None
+    assert search_payload["results"][0]["rerank_score"] is None
 
     answer = client.post("/api/qa/ask", json={"question": "维修电池要先做什么", "top_k": 3})
     assert answer.status_code == 200
     assert answer.json()["sources"]
     assert answer.json()["confidence"] > 0
+    assert answer.json()["matched"] is True
+    assert answer.json()["decision_score"] == answer.json()["confidence"]
 
     replacement_text = "维修机器人电池前必须打开检修模式。新电池额定电压为二十四伏。"
     replaced = client.put(
