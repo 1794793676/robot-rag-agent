@@ -34,7 +34,12 @@ def test_rerank_settings_defaults(monkeypatch):
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     settings = Settings(_env_file=None)
 
+    assert settings.rerank_enabled is True
     assert settings.rerank_model == "qwen3-rerank"
+    assert (
+        settings.rerank_base_url
+        == "https://dashscope-intl.aliyuncs.com/compatible-api/v1/reranks"
+    )
     assert settings.rerank_candidate_k == 30
     assert settings.rerank_threshold == 0.50
     assert settings.rerank_timeout_seconds == 2.0
