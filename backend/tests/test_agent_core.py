@@ -15,6 +15,14 @@ def create_rag_database(client, name: str, prompt: str = ""):
     return response.json()["rag_database_id"]
 
 
+def bind_qwen_test_response(qwen, response_id: str = "resp_1"):
+    from app.services.rag_first_turn import TurnIdentity
+
+    identity = TurnIdentity("sess_1", "conn_1", "turn_1", "db_1")
+    qwen.response_identities[response_id] = identity
+    return identity
+
+
 def test_session_manager_creates_updates_and_expires_sessions(monkeypatch):
     from app.agent.session_state import InMemorySessionStore
 
@@ -422,8 +430,10 @@ def test_qwen_client_maps_realtime_stream_events_to_browser_messages():
     async def send_event(message):
         outbound.append(message)
 
-    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen = QwenRealtimeClient(send_event=send_event, response_gate=lambda _: True)
     qwen.session_id = "sess_1"
+    qwen.pending_response_identity = bind_qwen_test_response(qwen)
+    qwen.response_identities.clear()
 
     asyncio.run(qwen._handle_event({"type": "response.created", "response": {"id": "resp_1"}}))
     asyncio.run(
@@ -475,8 +485,9 @@ def test_qwen_client_logs_audio_delta_metadata_at_debug(caplog):
     async def send_event(_message):
         return None
 
-    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen = QwenRealtimeClient(send_event=send_event, response_gate=lambda _: True)
     qwen.session_id = "sess_1"
+    bind_qwen_test_response(qwen)
 
     caplog.set_level(logging.DEBUG, logger="agent")
     asyncio.run(
@@ -506,8 +517,9 @@ def test_qwen_client_logs_answer_token_at_info_and_metadata_at_debug(caplog):
     async def send_event(_message):
         return None
 
-    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen = QwenRealtimeClient(send_event=send_event, response_gate=lambda _: True)
     qwen.session_id = "sess_1"
+    bind_qwen_test_response(qwen)
 
     caplog.set_level(logging.DEBUG, logger="agent")
     asyncio.run(
@@ -541,13 +553,18 @@ def test_qwen_client_sends_audio_cancel_and_tool_result_payloads():
             self.sent.append(payload)
 
     websocket = FakeWebSocket()
-    qwen = QwenRealtimeClient()
+    qwen = QwenRealtimeClient(response_gate=lambda _: True)
     qwen.session_id = "sess_1"
     qwen.websocket = websocket
 
     asyncio.run(qwen.send_audio_frame(b"\x01\x02"))
     asyncio.run(qwen.cancel_response("resp_1"))
-    asyncio.run(qwen.send_tool_result("call_1", {"matched": True, "results": []}))
+    identity = bind_qwen_test_response(qwen)
+    asyncio.run(
+        qwen.send_tool_result(
+            "call_1", {"matched": True, "results": []}, identity
+        )
+    )
 
     payloads = [__import__("json").loads(item) for item in websocket.sent]
     assert payloads[0]["type"] == "input_audio_buffer.append"
@@ -608,9 +625,10 @@ def test_qwen_client_dispatches_tool_call_and_returns_result(monkeypatch):
         outbound.append(message)
 
     monkeypatch.setattr(module, "dispatch_tool_call", fake_dispatch)
-    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen = QwenRealtimeClient(send_event=send_event, response_gate=lambda _: True)
     qwen.session_id = "sess_1"
     qwen.websocket = FakeWebSocket()
+    bind_qwen_test_response(qwen)
 
     asyncio.run(
         qwen._handle_event(
@@ -656,9 +674,10 @@ def test_qwen_client_logs_rag_match_summary_at_info(monkeypatch, caplog):
 
     monkeypatch.setattr(module, "dispatch_tool_call", fake_dispatch)
     caplog.set_level(logging.INFO, logger="tool_calls")
-    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen = QwenRealtimeClient(send_event=send_event, response_gate=lambda _: True)
     qwen.session_id = "sess_1"
     qwen.websocket = FakeWebSocket()
+    bind_qwen_test_response(qwen)
 
     asyncio.run(
         qwen._handle_event(

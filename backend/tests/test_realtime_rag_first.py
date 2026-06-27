@@ -49,11 +49,12 @@ def test_qwen_manual_protocol_and_explicit_response_creation(monkeypatch):
 
     monkeypatch.setenv("DASHSCOPE_API_KEY", "key")
     monkeypatch.setattr(module.websockets, "connect", connect)
-    qwen = QwenRealtimeClient()
+    identity = TurnIdentity("sess", "conn", "turn", "db")
+    qwen = QwenRealtimeClient(response_gate=lambda candidate: candidate == identity)
 
     asyncio.run(qwen.connect("sess"))
     asyncio.run(qwen.commit_audio_buffer())
-    asyncio.run(qwen.create_grounded_response("evidence"))
+    asyncio.run(qwen.create_grounded_response("evidence", identity))
 
     payloads = [json.loads(item) for item in socket.sent]
     assert payloads[0]["session"]["turn_detection"] is None
@@ -96,7 +97,7 @@ def test_text_turn_retrieves_before_explicit_response_and_adds_identity(monkeypa
     )
     session.qwen.websocket = QwenSocket()
 
-    async def create_response(instructions):
+    async def create_response(instructions, identity):
         calls.append(("response.create", instructions))
 
     monkeypatch.setattr(session.qwen, "create_grounded_response", create_response)
@@ -122,7 +123,7 @@ def test_cancelled_turn_never_creates_response(monkeypatch):
     )
     created = []
 
-    async def create_response(instructions):
+    async def create_response(instructions, identity):
         created.append(instructions)
 
     monkeypatch.setattr(session.qwen, "create_grounded_response", create_response)
@@ -160,3 +161,108 @@ def test_interrupt_cancels_turn_before_qwen_response():
     asyncio.run(controller.interrupt("sess", response_id="resp"))
 
     assert order == ["cancel_turn", "response.cancel"]
+
+
+def test_cancelled_tool_result_does_not_continue_response(monkeypatch):
+    import app.agent.qwen_realtime_client as module
+
+    store = InMemorySessionStore()
+    state = store.create("sess", "db")
+    turn = store.begin_turn("sess")
+    identity = TurnIdentity("sess", state.connection_id, turn.turn_id, "db")
+    socket = QwenSocket()
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    async def dispatch(*args):
+        dispatch_started.set()
+        await release_dispatch.wait()
+        return {"matched": False}
+
+    monkeypatch.setattr(module, "dispatch_tool_call", dispatch)
+    qwen = QwenRealtimeClient(
+        response_gate=lambda candidate: store.is_current_and_bound(
+            candidate.session_id,
+            candidate.connection_id,
+            candidate.turn_id,
+            candidate.rag_database_id,
+        )
+    )
+    qwen.session_id = "sess"
+    qwen.websocket = socket
+    qwen.response_identities["resp-old"] = identity
+
+    async def exercise():
+        task = asyncio.create_task(
+            qwen._handle_event(
+                {
+                    "type": "response.function_call_arguments.done",
+                    "response_id": "resp-old",
+                    "name": "web_search",
+                    "call_id": "call",
+                    "arguments": "{}",
+                }
+            )
+        )
+        await dispatch_started.wait()
+        store.cancel_turn("sess", turn.turn_id)
+        release_dispatch.set()
+        await task
+
+    asyncio.run(exercise())
+
+    payloads = [json.loads(item) for item in socket.sent]
+    assert [item["type"] for item in payloads] == ["conversation.item.create"]
+
+
+def test_response_events_keep_bound_identity_and_suppress_unmapped_or_stale():
+    outbound = []
+    current = [True]
+    identity = TurnIdentity("sess", "conn-old", "turn-old", "db-old")
+
+    async def send(message):
+        outbound.append(message)
+
+    qwen = QwenRealtimeClient(
+        send_event=send,
+        response_gate=lambda candidate: current[0] and candidate == identity,
+    )
+    qwen.session_id = "sess"
+    qwen.websocket = QwenSocket()
+
+    asyncio.run(qwen.create_grounded_response("grounded", identity))
+    asyncio.run(
+        qwen._handle_event({"type": "response.created", "response": {"id": "resp-old"}})
+    )
+    asyncio.run(
+        qwen._handle_event(
+            {"type": "response.text.delta", "response_id": "resp-old", "delta": "old"}
+        )
+    )
+    asyncio.run(
+        qwen._handle_event(
+            {"type": "response.text.delta", "response_id": "unknown", "delta": "drop"}
+        )
+    )
+    current[0] = False
+    asyncio.run(
+        qwen._handle_event(
+            {"type": "response.text.delta", "response_id": "resp-old", "delta": "late"}
+        )
+    )
+    asyncio.run(
+        qwen._handle_event({"type": "response.done", "response": {"id": "resp-old"}})
+    )
+
+    assert [item["type"] for item in outbound] == [
+        "response_started",
+        "text_delta",
+    ]
+    assert outbound[1]["delta"] == "old"
+    assert all(
+        item["connection_id"] == "conn-old"
+        and item["turn_id"] == "turn-old"
+        and item["rag_database_id"] == "db-old"
+        for item in outbound
+    )
+    assert "resp-old" not in qwen.response_identities

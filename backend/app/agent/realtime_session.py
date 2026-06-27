@@ -41,6 +41,7 @@ class RealtimeAgentSession:
         self.qwen = QwenRealtimeClient(
             send_event=self.send_to_browser,
             transcript_callback=self._handle_transcript,
+            response_gate=self._identity_is_current,
         )
 
     async def run(self) -> None:
@@ -225,7 +226,15 @@ class RealtimeAgentSession:
             identity.rag_database_id,
         ):
             return
-        await self.qwen.create_grounded_response(context.instructions)
+        await self.qwen.create_grounded_response(context.instructions, identity)
+
+    def _identity_is_current(self, identity: TurnIdentity) -> bool:
+        return self.store.is_current_and_bound(
+            identity.session_id,
+            identity.connection_id,
+            identity.turn_id,
+            identity.rag_database_id,
+        )
 
     async def _emit_stage(
         self, stage: str, identity: TurnIdentity | None = None
