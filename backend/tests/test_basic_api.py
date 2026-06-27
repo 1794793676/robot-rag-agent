@@ -19,7 +19,26 @@ def create_rag_database(client, name: str, prompt: str = ""):
 def test_health(client):
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["similarity_threshold"] == 0.15
+    assert payload["rerank_threshold"] == 0.50
+    assert payload["rerank_model"] == "qwen3-rerank"
+    assert payload["rerank_enabled"] is False
+    assert payload["rerank_mode"] == "disabled"
+
+
+def test_rerank_settings_defaults(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    settings = Settings(_env_file=None)
+
+    assert settings.rerank_model == "qwen3-rerank"
+    assert settings.rerank_candidate_k == 30
+    assert settings.rerank_threshold == 0.50
+    assert settings.rerank_timeout_seconds == 2.0
+    assert settings.rerank_is_enabled is False
 
 
 def test_rag_databases_default_and_independent_prompts(client):

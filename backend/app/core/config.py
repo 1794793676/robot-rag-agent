@@ -47,8 +47,20 @@ class Settings(BaseSettings):
     chunk_size_chars: int = 800
     chunk_overlap_chars: int = 120
     similarity_threshold: float = 0.35
+    rerank_enabled: bool = True
+    rerank_model: str = "qwen3-rerank"
+    rerank_base_url: str = (
+        "https://dashscope-intl.aliyuncs.com/compatible-api/v1/reranks"
+    )
+    rerank_candidate_k: int = Field(default=30, ge=20, le=50)
+    rerank_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    rerank_timeout_seconds: float = Field(default=2.0, gt=0.0, le=10.0)
     max_upload_mb: int = 30
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    @property
+    def rerank_is_enabled(self) -> bool:
+        return self.rerank_enabled and bool(self.dashscope_api_key)
 
     @property
     def files_dir(self) -> Path:

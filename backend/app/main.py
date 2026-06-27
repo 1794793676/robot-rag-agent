@@ -94,4 +94,9 @@ def health():
         "vector_backend": getattr(app.state, "vector_store", None).backend_name
         if hasattr(app.state, "vector_store")
         else "initializing",
+        "similarity_threshold": settings.similarity_threshold,
+        "rerank_enabled": settings.rerank_is_enabled,
+        "rerank_model": settings.rerank_model,
+        "rerank_mode": "dashscope" if settings.rerank_is_enabled else "disabled",
+        "rerank_threshold": settings.rerank_threshold,
     }
