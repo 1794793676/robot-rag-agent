@@ -28,7 +28,7 @@ def test_build_reranker_selects_dashscope_when_enabled() -> None:
         )
     )
 
-    assert isinstance(reranker, DashScopeReranker)
+    assert isinstance(reranker, main.DashScopeReranker)
 
 
 def test_build_reranker_selects_disabled_when_not_enabled() -> None:
@@ -42,7 +42,7 @@ def test_build_reranker_selects_disabled_when_not_enabled() -> None:
         )
     )
 
-    assert isinstance(reranker, DisabledReranker)
+    assert isinstance(reranker, main.DisabledReranker)
 
 
 def test_dashscope_reranker_sends_payload_and_maps_scores() -> None:
