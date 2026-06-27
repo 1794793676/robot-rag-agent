@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from threading import RLock
 import time
 from typing import Literal, Protocol
 from uuid import uuid4
@@ -60,90 +61,101 @@ class InMemorySessionStore:
     def __init__(self, ttl_seconds: int = 1800):
         self.ttl_seconds = ttl_seconds
         self._sessions: dict[str, AgentSessionState] = {}
+        self._lock = RLock()
 
     def create(
         self, session_id: str | None = None, rag_database_id: str | None = None
     ) -> AgentSessionState:
-        sid = session_id or f"sess_{uuid4().hex}"
-        state = AgentSessionState(
-            session_id=sid,
-            connection_id=f"conn_{uuid4().hex}",
-            rag_database_id=rag_database_id,
-        )
-        self._sessions[sid] = state
-        return state
+        with self._lock:
+            sid = session_id or f"sess_{uuid4().hex}"
+            state = AgentSessionState(
+                session_id=sid,
+                connection_id=f"conn_{uuid4().hex}",
+                rag_database_id=rag_database_id,
+            )
+            self._sessions[sid] = state
+            return state
 
     def get(self, session_id: str) -> AgentSessionState | None:
-        return self._sessions.get(session_id)
+        with self._lock:
+            return self._sessions.get(session_id)
 
     def touch(self, session_id: str) -> AgentSessionState | None:
-        state = self.get(session_id)
-        if state:
-            state.touch()
-        return state
+        with self._lock:
+            state = self.get(session_id)
+            if state:
+                state.touch()
+            return state
 
     def begin_turn(self, session_id: str) -> AgentTurnState | None:
-        state = self.get(session_id)
-        if not state or state.status != "active":
-            return None
-        if state.current_turn:
-            state.current_turn.cancelled = True
-        state.current_turn = AgentTurnState(turn_id=f"turn_{uuid4().hex}")
-        state.touch()
-        return state.current_turn
+        with self._lock:
+            state = self.get(session_id)
+            if not state or state.status != "active":
+                return None
+            if state.current_turn:
+                state.current_turn.cancelled = True
+            state.current_turn = AgentTurnState(turn_id=f"turn_{uuid4().hex}")
+            state.touch()
+            return state.current_turn
 
     def cancel_turn(self, session_id: str, turn_id: str | None = None) -> bool:
-        state = self.get(session_id)
-        if not state or not state.current_turn:
-            return False
-        if turn_id is not None and state.current_turn.turn_id != turn_id:
-            return False
-        state.current_turn.cancelled = True
-        state.touch()
-        return True
+        with self._lock:
+            state = self.get(session_id)
+            if not state or not state.current_turn:
+                return False
+            if turn_id is not None and state.current_turn.turn_id != turn_id:
+                return False
+            state.current_turn.cancelled = True
+            state.touch()
+            return True
 
     def cancel_session(self, session_id: str) -> AgentSessionState | None:
-        state = self.get(session_id)
-        if not state:
-            return None
-        self.cancel_turn(session_id)
-        state.status = "cancelled"
-        state.touch()
-        return state
+        with self._lock:
+            state = self.get(session_id)
+            if not state:
+                return None
+            self.cancel_turn(session_id)
+            state.status = "cancelled"
+            state.touch()
+            return state
 
     def close_session(self, session_id: str) -> AgentSessionState | None:
-        state = self.get(session_id)
-        if not state:
-            return None
-        self.cancel_turn(session_id)
-        state.status = "closed"
-        state.touch()
-        return state
+        with self._lock:
+            state = self.get(session_id)
+            if not state:
+                return None
+            self.cancel_turn(session_id)
+            state.status = "closed"
+            state.touch()
+            return state
 
     def is_current(self, session_id: str, connection_id: str, turn_id: str) -> bool:
-        state = self.get(session_id)
-        return bool(
-            state
-            and state.status == "active"
-            and state.connection_id == connection_id
-            and state.current_turn
-            and state.current_turn.turn_id == turn_id
-            and not state.current_turn.cancelled
-        )
+        with self._lock:
+            state = self.get(session_id)
+            return bool(
+                state
+                and state.status == "active"
+                and state.connection_id == connection_id
+                and state.current_turn
+                and state.current_turn.turn_id == turn_id
+                and not state.current_turn.cancelled
+            )
 
     def delete(self, session_id: str) -> None:
-        self._sessions.pop(session_id, None)
+        with self._lock:
+            self._sessions.pop(session_id, None)
 
     def cleanup_expired(self) -> int:
-        now = time.time()
-        expired = [
-            session_id
-            for session_id, state in self._sessions.items()
-            if now - state.updated_at > self.ttl_seconds
-        ]
-        for session_id in expired:
-            self.delete(session_id)
-        return len(expired)
+        with self._lock:
+            now = time.time()
+            expired = [
+                session_id
+                for session_id, state in self._sessions.items()
+                if now - state.updated_at > self.ttl_seconds
+            ]
+            for session_id in expired:
+                self.delete(session_id)
+            return len(expired)
 
 
 session_store = InMemorySessionStore()

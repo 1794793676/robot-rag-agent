@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -78,6 +79,91 @@ def test_session_cancellation_and_close_invalidate_current_turn():
     store.close_session("sess_1")
     assert state.status == "closed"
     assert store.is_current("sess_1", state.connection_id, active_turn.turn_id) is False
+
+
+def test_cancel_session_is_atomic_with_concurrent_begin_turn(monkeypatch):
+    from app.agent.session_state import InMemorySessionStore
+
+    store = InMemorySessionStore()
+    state = store.create("sess_1", "database_a")
+    cancel_reached_gap = threading.Event()
+    allow_cancel_to_finish = threading.Event()
+    original_cancel_turn = store.cancel_turn
+
+    def paused_cancel_turn(session_id, turn_id=None):
+        result = original_cancel_turn(session_id, turn_id)
+        cancel_reached_gap.set()
+        assert allow_cancel_to_finish.wait(timeout=2)
+        return result
+
+    monkeypatch.setattr(store, "cancel_turn", paused_cancel_turn)
+    cancelling = threading.Thread(target=store.cancel_session, args=("sess_1",))
+    cancelling.start()
+    assert cancel_reached_gap.wait(timeout=2)
+
+    turn_result = []
+    beginning = threading.Thread(
+        target=lambda: turn_result.append(store.begin_turn("sess_1"))
+    )
+    beginning.start()
+    beginning.join(timeout=0.1)
+    allow_cancel_to_finish.set()
+    cancelling.join(timeout=2)
+    beginning.join(timeout=2)
+
+    assert not cancelling.is_alive()
+    assert not beginning.is_alive()
+    assert state.status == "cancelled"
+    assert turn_result == [None]
+    assert state.current_turn is None or state.current_turn.cancelled is True
+
+
+def test_cleanup_expired_is_atomic_with_concurrent_create():
+    from app.agent.session_state import InMemorySessionStore
+
+    store = InMemorySessionStore(ttl_seconds=0)
+    store.create("sess_expired")
+    iteration_started = threading.Event()
+    allow_iteration = threading.Event()
+
+    class PausingDict(dict):
+        def items(self):
+            iterator = iter(super().items())
+
+            def paused_items():
+                first = next(iterator)
+                iteration_started.set()
+                assert allow_iteration.wait(timeout=2)
+                yield first
+                yield from iterator
+
+            return paused_items()
+
+    store._sessions = PausingDict(store._sessions)
+    errors = []
+    cleanup = threading.Thread(
+        target=lambda: _capture_thread_error(store.cleanup_expired, errors)
+    )
+    cleanup.start()
+    assert iteration_started.wait(timeout=2)
+
+    creating = threading.Thread(target=store.create, args=("sess_new",))
+    creating.start()
+    creating.join(timeout=0.1)
+    allow_iteration.set()
+    cleanup.join(timeout=2)
+    creating.join(timeout=2)
+
+    assert errors == []
+    assert not cleanup.is_alive()
+    assert not creating.is_alive()
+
+
+def _capture_thread_error(operation, errors):
+    try:
+        operation()
+    except Exception as exc:  # noqa: BLE001
+        errors.append(exc)
 
 
 def test_interruption_marks_current_response_inactive():
