@@ -35,6 +35,51 @@ def test_session_manager_creates_updates_and_expires_sessions(monkeypatch):
     assert store.get(state.session_id) is None
 
 
+def test_session_lifecycle_tracks_connection_and_current_turn():
+    from app.agent.session_state import InMemorySessionStore
+
+    store = InMemorySessionStore()
+    state = store.create("sess_1", "database_a")
+
+    assert state.connection_id.startswith("conn_")
+    assert state.status == "active"
+    turn = store.begin_turn("sess_1")
+    assert turn is not None
+    assert turn.turn_id.startswith("turn_")
+    assert store.is_current("sess_1", state.connection_id, turn.turn_id) is True
+
+    next_turn = store.begin_turn("sess_1")
+    assert next_turn is not None
+    assert turn.cancelled is True
+    assert store.is_current("sess_1", state.connection_id, turn.turn_id) is False
+    assert store.is_current("sess_1", "conn_stale", next_turn.turn_id) is False
+    assert store.is_current("sess_stale", state.connection_id, next_turn.turn_id) is False
+
+
+def test_session_cancellation_and_close_invalidate_current_turn():
+    from app.agent.session_state import InMemorySessionStore
+
+    store = InMemorySessionStore()
+    state = store.create("sess_1", "database_a")
+    turn = store.begin_turn("sess_1")
+    assert turn is not None
+
+    store.cancel_turn("sess_1", turn.turn_id)
+    assert turn.cancelled is True
+    assert store.is_current("sess_1", state.connection_id, turn.turn_id) is False
+
+    active_turn = store.begin_turn("sess_1")
+    assert active_turn is not None
+    store.cancel_session("sess_1")
+    assert state.status == "cancelled"
+    assert active_turn.cancelled is True
+    assert store.begin_turn("sess_1") is None
+
+    store.close_session("sess_1")
+    assert state.status == "closed"
+    assert store.is_current("sess_1", state.connection_id, active_turn.turn_id) is False
+
+
 def test_interruption_marks_current_response_inactive():
     from app.agent.interruption import InterruptionController
     from app.agent.session_state import InMemorySessionStore
@@ -138,6 +183,7 @@ def test_agent_session_api_returns_websocket_fallback(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["session_id"].startswith("sess_")
+    assert payload["connection_id"].startswith("conn_")
     assert payload["mode"] == "websocket_fallback"
     assert payload["websocket_url"] == f"/api/agent/ws/{payload['session_id']}"
     assert payload["model"] == "qwen3.5-omni-flash-realtime"
@@ -183,6 +229,43 @@ def test_agent_tool_debug_uses_session_bound_rag_database(client):
     assert result["matched"] is True
     assert result["confidence"] == result["decision_score"]
     assert result["decision_score_type"] == "vector"
+
+
+def test_agent_tool_arguments_cannot_override_session_database(client):
+    db_a = create_rag_database(client, "Bound DB", "Bound prompt")
+    db_b = create_rag_database(client, "Malicious DB", "Malicious prompt")
+    session_payload = client.post("/api/agent/session", json={"rag_database_id": db_a}).json()
+
+    response = client.post(
+        "/api/agent/tool",
+        json={
+            "session_id": session_payload["session_id"],
+            "name": "rag_search",
+            "arguments": {
+                "query": "database",
+                "top_k": 5,
+                "rag_database_id": db_b,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["rag_database_id"] == db_a
+
+
+def test_cancelled_session_cannot_dispatch_tools():
+    from app.agent.session_state import session_store
+    from app.agent.tools import dispatch_tool_call
+
+    state = session_store.create("sess_cancelled", "database_a")
+    session_store.cancel_session(state.session_id)
+
+    result = asyncio.run(
+        dispatch_tool_call("rag_search", {"query": "secret"}, state.session_id)
+    )
+
+    assert result["matched"] is False
+    assert result["error"]["code"] == "SESSION_INACTIVE"
 
 
 def test_agent_tool_debug_web_search_degrades_without_key(client, monkeypatch):

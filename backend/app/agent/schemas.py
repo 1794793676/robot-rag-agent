@@ -14,6 +14,7 @@ class ErrorEnvelope(BaseModel):
 
 class AgentSessionResponse(BaseModel):
     session_id: str
+    connection_id: str
     rag_database_id: str
     mode: Literal["websocket_fallback", "webrtc_direct"]
     websocket_url: str
