@@ -95,8 +95,13 @@ class DashScopeReranker:
             raw_items = body["output"]["results"]
             if not isinstance(raw_items, list):
                 raise TypeError("results must be a list")
+            if len(raw_items) > min(top_n, len(documents)):
+                raise ValueError("too many rerank results")
+            if documents and top_n > 0 and not raw_items:
+                raise ValueError("missing rerank results")
 
             items: list[RerankItem] = []
+            seen_indexes: set[int] = set()
             for raw_item in raw_items:
                 index = raw_item["index"]
                 score = raw_item["relevance_score"]
@@ -109,6 +114,9 @@ class DashScopeReranker:
                     or not math.isfinite(float(score))
                 ):
                     raise ValueError("invalid rerank result")
+                if index in seen_indexes:
+                    raise ValueError("duplicate rerank result")
+                seen_indexes.add(index)
                 items.append(
                     RerankItem(index=index, score=max(0.0, min(1.0, float(score))))
                 )

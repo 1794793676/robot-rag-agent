@@ -96,7 +96,11 @@ def test_dashscope_reranker_passes_url_and_timeout_to_injected_client() -> None:
             self.call = {"url": url, **kwargs}
             return httpx.Response(
                 200,
-                json={"output": {"results": []}},
+                json={
+                    "output": {
+                        "results": [{"index": 0, "relevance_score": 0.5}]
+                    }
+                },
                 request=httpx.Request("POST", url),
             )
 
@@ -189,6 +193,48 @@ def test_dashscope_reranker_degrades_on_http_or_schema_failure(
     assert result.applied is True
     assert result.degraded is True
     assert result.error_code == error_code
+
+
+@pytest.mark.parametrize(
+    ("results", "documents", "top_n"),
+    [
+        (
+            [
+                {"index": 0, "relevance_score": 0.9},
+                {"index": 0, "relevance_score": 0.8},
+            ],
+            ["first", "second"],
+            2,
+        ),
+        (
+            [
+                {"index": 0, "relevance_score": 0.9},
+                {"index": 1, "relevance_score": 0.8},
+                {"index": 2, "relevance_score": 0.7},
+            ],
+            ["first", "second", "third"],
+            2,
+        ),
+        ([], ["first"], 1),
+    ],
+)
+def test_dashscope_reranker_rejects_invalid_result_cardinality(
+    results: list[dict], documents: list[str], top_n: int
+) -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, json={"output": {"results": results}}
+        )
+    )
+
+    result = DashScopeReranker(_settings(), transport=transport).rerank(
+        "q", documents, top_n
+    )
+
+    assert result.items == []
+    assert result.applied is True
+    assert result.degraded is True
+    assert result.error_code == "RERANK_INVALID_RESPONSE"
 
 
 def test_disabled_reranker_is_not_applied() -> None:
