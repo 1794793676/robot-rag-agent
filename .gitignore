@@ -4,6 +4,7 @@ backend/.venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.worktrees/
 frontend/node_modules/
 frontend/dist/
 storage/files/*
@@ -12,4 +13,3 @@ storage/index/*
 !storage/index/.gitkeep
 storage/rag.db
 *.log
-
