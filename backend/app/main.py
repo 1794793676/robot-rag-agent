@@ -18,6 +18,7 @@ from app.agent.session_state import session_store
 from app.agent.tools import configure_rag_query_service
 from app.rag.answerer import DashScopeAnswerer, ExtractiveAnswerer
 from app.rag.embedder import Embedder
+from app.rag.reranker import DashScopeReranker, DisabledReranker
 from app.rag.retriever import Retriever
 from app.rag.vector_store import VectorRecord, VectorStore
 from app.services.documents import DocumentService
@@ -54,6 +55,11 @@ async def lifespan(app: FastAPI):
     app.state.embedder = embedder
     app.state.vector_store = vector_store
     app.state.retriever = Retriever(embedder, vector_store)
+    app.state.reranker = (
+        DashScopeReranker(settings)
+        if settings.rerank_is_enabled
+        else DisabledReranker()
+    )
     app.state.answerer = (
         DashScopeAnswerer(settings)
         if settings.dashscope_api_key
