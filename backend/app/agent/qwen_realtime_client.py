@@ -18,6 +18,7 @@ from app.agent.tools import TOOLS, dispatch_tool_call, tool_result_to_output
 from app.core.config import get_settings
 
 AgentEventSender = Callable[[dict[str, Any]], Awaitable[None]]
+TranscriptCallback = Callable[[str], Awaitable[None] | None]
 
 agent_log = logging.getLogger("agent")
 tool_log = logging.getLogger("tool_calls")
@@ -51,9 +52,14 @@ class QwenRealtimeError(RuntimeError):
 
 
 class QwenRealtimeClient:
-    def __init__(self, send_event: AgentEventSender | None = None):
+    def __init__(
+        self,
+        send_event: AgentEventSender | None = None,
+        transcript_callback: TranscriptCallback | None = None,
+    ):
         self.settings = get_settings()
         self.send_event = send_event
+        self.transcript_callback = transcript_callback
         self.session_id: str | None = None
         self.websocket: Any | None = None
         self.closed = False
@@ -99,11 +105,7 @@ class QwenRealtimeClient:
                     "input_audio_format": "pcm",
                     "output_audio_format": "pcm",
                     "instructions": AGENT_SYSTEM_PROMPT,
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.8,
-                        "silence_duration_ms": 800,
-                    },
+                    "turn_detection": None,
                     "tools": TOOLS,
                     "temperature": 0.7,
                     "max_tokens": 1200,
@@ -123,14 +125,30 @@ class QwenRealtimeClient:
             }
         )
 
-    async def send_text_event(self, text: str) -> None:
-        # The Realtime API is audio-first. This gives the model a text instruction path
-        # for browser debugging without exposing a separate non-realtime model.
+    async def commit_audio_buffer(self) -> None:
+        await self._send(
+            {"type": "input_audio_buffer.commit", "event_id": self._event_id()}
+        )
+
+    async def create_grounded_response(self, instructions: str) -> None:
         await self._send(
             {
                 "type": "response.create",
                 "event_id": self._event_id(),
-                "response": {"instructions": f"用户通过文字输入：{text}"},
+                "response": {"instructions": instructions},
+            }
+        )
+
+    async def send_text_event(self, text: str) -> None:
+        await self._send(
+            {
+                "type": "conversation.item.create",
+                "event_id": self._event_id(),
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
             }
         )
 
@@ -237,6 +255,16 @@ class QwenRealtimeClient:
             )
         elif event_type == "response.function_call_arguments.done":
             await self._handle_tool_call(event)
+        elif event_type == "conversation.item.input_audio_transcription.completed":
+            transcript = str(
+                event.get("transcript")
+                or event.get("item", {}).get("transcript")
+                or ""
+            ).strip()
+            if transcript and self.transcript_callback:
+                result = self.transcript_callback(transcript)
+                if asyncio.iscoroutine(result):
+                    await result
         elif event_type == "input_audio_buffer.speech_started" and self.send_event:
             agent_log.info("user_speech_started session=%s", self.session_id)
             await self.send_event({"type": "speech_started", "session_id": self.session_id})
