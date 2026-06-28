@@ -21,6 +21,22 @@ export class RealtimeClient {
     this.handlers.push(handler)
   }
 
+  async open(databaseId: string): Promise<any> {
+    const session = await this.createSession({ rag_database_id: databaseId })
+    if (
+      session.rag_database_id !== databaseId
+      || !session.session_id
+      || !session.connection_id
+      || this.identity?.sessionId !== session.session_id
+      || this.identity?.connectionId !== session.connection_id
+      || this.identity?.ragDatabaseId !== databaseId
+    ) {
+      throw new Error('Agent 会话身份与当前 RAG 数据库不一致')
+    }
+    await this.connect()
+    return session
+  }
+
   async createSession(payload: Record<string, any> = {}): Promise<any> {
     const response = await fetch('/api/agent/session', {
       method: 'POST',

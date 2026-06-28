@@ -36,11 +36,19 @@ const topK = ref(5)
 const qaLoading = ref(false)
 const qaResult = ref(null)
 const qaError = ref('')
+const agentStatus = ref('idle')
 const selectedRagDatabase = computed(() =>
   ragDatabases.value.find(
     (database) => database.rag_database_id === selectedRagDatabaseId.value,
   ) || null,
 )
+const agentStatusLabel = computed(() => {
+  if (agentStatus.value === 'switching_database') return 'Agent 正在切换数据库'
+  if (agentStatus.value === 'connecting') return 'Agent 正在连接'
+  if (agentStatus.value === 'error') return 'Agent 重连失败，可重试'
+  if (agentStatus.value === 'idle') return 'Agent 未连接'
+  return 'Agent 已连接'
+})
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString() : '-'
@@ -297,9 +305,14 @@ onMounted(async () => {
           {{ selectedRagDatabase?.chunk_count ?? 0 }} 个 Chunks ·
           {{ selectedRagDatabaseId ? '可用' : '不可用' }}
         </small>
+        <small class="agent-selector-status">{{ agentStatusLabel }}</small>
       </div>
       <div class="database-row">
-        <select v-model="selectedRagDatabaseId" @change="switchRagDatabase">
+        <select
+          v-model="selectedRagDatabaseId"
+          :disabled="agentStatus === 'switching_database'"
+          @change="switchRagDatabase"
+        >
           <option
             v-for="database in ragDatabases"
             :key="database.rag_database_id"
@@ -317,6 +330,7 @@ onMounted(async () => {
       v-if="activePage === 'agent'"
       :rag-database-id="selectedRagDatabaseId"
       :rag-database="selectedRagDatabase"
+      @status-change="agentStatus = $event"
     />
 
     <template v-else>

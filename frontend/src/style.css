@@ -28,6 +28,7 @@ h1 { margin: 8px 0; font-family: Georgia, "Noto Serif SC", serif; font-size: cla
 .database-current { display: grid; grid-template-columns: auto auto; align-items: center; justify-content: start; gap: 5px 9px; min-width: 230px; }
 .database-current strong { font-size: 18px; }
 .database-current small, .database-current .eyebrow { grid-column: 1 / -1; color: #617067; }
+.database-current .agent-selector-status { color: #285e48; font-weight: 700; }
 .global-database-selector .database-row { flex: 1; }
 
 .panel { background: #fbfcf8; border: 1px solid #d5dbd3; box-shadow: 0 10px 32px rgba(25,45,34,.06); margin-top: 18px; padding: 24px; }
