@@ -31,6 +31,23 @@ test('emits speech start and valid speech end exactly once', () => {
   assert.deepEqual(events, ['speech-start', 'speech-end'])
 })
 
+test('detects a local utterance when the agent is not speaking', () => {
+  let state = createVadState()
+  const events = []
+  const update = (now, isSpeech) => {
+    const result = updateVadState(state, { now, isSpeech, agentSpeaking: false, inCooldown: false })
+    state = result.state
+    events.push(...result.events)
+  }
+
+  update(0, true)
+  update(300, true)
+  update(301, false)
+  update(1101, false)
+
+  assert.deepEqual(events, ['speech-start', 'speech-end'])
+})
+
 test('does not end a short utterance and preserves interruption cooldown', () => {
   let state = createVadState()
   const events = []

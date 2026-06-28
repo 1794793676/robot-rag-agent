@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     qwen_realtime_url: str = ""
     qwen_realtime_workspace_id: str = ""
     qwen_realtime_voice: str = "Tina"
+    qwen_input_transcription_model: str = "qwen3-asr-flash-realtime"
     rag_base_url: str = "http://127.0.0.1:8000"
     web_search_provider: str = "tavily"
     session_ttl_seconds: int = 1800

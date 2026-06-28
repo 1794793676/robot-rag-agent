@@ -39,9 +39,7 @@ export function updateVadState(
     if (
       !next.speechStartEmitted &&
       next.validSpeech &&
-      speechMs >= INTERRUPT_CONFIG.vadStartMs &&
-      input.agentSpeaking &&
-      !input.inCooldown
+      speechMs >= INTERRUPT_CONFIG.vadStartMs
     ) {
       next.speechStartEmitted = true
       events.push('speech-start')
@@ -75,7 +73,7 @@ export class InterruptController {
   private vadState = createVadState()
   private cooldownUntil = 0
   private agentSpeaking = false
-  private callback: (() => void) | null = null
+  private callback: ((shouldInterrupt: boolean) => void) | null = null
   private speechEndCallback: (() => void) | null = null
 
   async start(stream: MediaStream): Promise<void> {
@@ -100,7 +98,7 @@ export class InterruptController {
     this.vadState = createVadState()
   }
 
-  onUserSpeechStart(callback: () => void): void {
+  onUserSpeechStart(callback: (shouldInterrupt: boolean) => void): void {
     this.callback = callback
   }
 
@@ -137,8 +135,9 @@ export class InterruptController {
     this.vadState = result.state
     for (const event of result.events) {
       if (event === 'speech-start') {
-        this.callback?.()
-        this.startCooldown()
+        const shouldInterrupt = this.agentSpeaking && !this.inCooldown()
+        this.callback?.(shouldInterrupt)
+        if (shouldInterrupt) this.startCooldown()
       } else {
         this.speechEndCallback?.()
       }

@@ -14,6 +14,7 @@ import { InterruptController } from '../webrtc/interruptController'
 import { RealtimeClient } from '../webrtc/realtimeClient'
 import { reduceConnection } from '../webrtc/connectionIdentity'
 import { ConnectionAttemptManager } from '../webrtc/connectionAttempt'
+import { VoiceTurnCommit } from '../webrtc/voiceTurnCommit'
 
 const status = ref('idle')
 const session = ref(null)
@@ -32,7 +33,7 @@ const inputEnabled = ref(false)
 const retrievalDiagnostics = ref(null)
 const interruptedResponseIds = new Set()
 let activeDiagnostic = null
-let voiceTurnCommitted = false
+const voiceTurnCommit = new VoiceTurnCommit()
 let databaseSwitchSequence = 0
 
 const props = defineProps({
@@ -117,10 +118,8 @@ function bindClient(candidate) {
       status.value = 'interrupted'
     } else if (message.type === 'response_done') {
       setAgentSpeaking(false)
-      voiceTurnCommitted = false
       status.value = micActive.value ? 'listening' : 'connected'
     } else if (message.type === 'speech_started') {
-      voiceTurnCommitted = false
       isUserSpeaking.value = true
       stopCurrentPlayback('server_speech_started')
     } else if (message.type === 'speech_stopped') {
@@ -139,19 +138,20 @@ function bindClient(candidate) {
   })
 }
 
-interruptController.onUserSpeechStart(() => {
-  stopCurrentPlayback('user_speech')
+interruptController.onUserSpeechStart((shouldInterrupt) => {
+  voiceTurnCommit.startUtterance()
+  isUserSpeaking.value = true
+  if (shouldInterrupt) stopCurrentPlayback('user_speech')
 })
 
 interruptController.onUserSpeechEnd(() => {
   const activeSessionId = session.value?.session_id
   if (
-    voiceTurnCommitted ||
     !micActive.value ||
     !activeSessionId ||
     client.sessionId !== activeSessionId
   ) return
-  voiceTurnCommitted = true
+  if (!voiceTurnCommit.finishUtterance()) return
   isUserSpeaking.value = false
   client.commitAudio()
   status.value = 'transcribing'
@@ -222,14 +222,14 @@ async function toggleMic() {
     if (micActive.value) {
       client.stopMicrophone()
       interruptController.stop()
-      voiceTurnCommitted = false
+      voiceTurnCommit.reset()
       micActive.value = false
       status.value = 'connected'
       return
     }
     const stream = await client.startMicrophone()
     await interruptController.start(stream)
-    voiceTurnCommitted = false
+    voiceTurnCommit.reset()
     micActive.value = true
     status.value = 'listening'
   } catch (err) {
@@ -280,7 +280,7 @@ function setAgentSpeaking(value) {
 
 function clearConnectionArtifacts() {
   session.value = null
-  voiceTurnCommitted = false
+  voiceTurnCommit.reset()
   micActive.value = false
   setAgentSpeaking(false)
   currentResponseId.value = null

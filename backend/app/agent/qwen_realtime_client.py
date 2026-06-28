@@ -123,6 +123,9 @@ class QwenRealtimeClient:
                     "voice": self.settings.qwen_realtime_voice,
                     "input_audio_format": "pcm",
                     "output_audio_format": "pcm",
+                    "input_audio_transcription": {
+                        "model": self.settings.qwen_input_transcription_model,
+                    },
                     "instructions": AGENT_SYSTEM_PROMPT,
                     "turn_detection": None,
                     "tools": TOOLS,

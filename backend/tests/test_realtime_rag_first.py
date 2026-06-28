@@ -84,6 +84,9 @@ def test_qwen_manual_protocol_and_explicit_response_creation(monkeypatch):
 
     payloads = [json.loads(item) for item in socket.sent]
     assert payloads[0]["session"]["turn_detection"] is None
+    assert payloads[0]["session"]["input_audio_transcription"] == {
+        "model": "qwen3-asr-flash-realtime"
+    }
     assert [item["type"] for item in payloads[1:]] == [
         "input_audio_buffer.commit",
         "response.create",
