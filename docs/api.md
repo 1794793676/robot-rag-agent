@@ -6,7 +6,7 @@
 GET /health
 ```
 
-返回 embedding 模式和向量索引后端。
+返回 embedding/向量后端以及 `similarity_threshold`、`rerank_enabled`、`rerank_model`、`rerank_mode`、`rerank_threshold` 的实际值。
 
 ## Documents
 
@@ -149,7 +149,9 @@ WS /api/agent/ws/{session_id}
 
 客户端消息：`user_text`、`audio_chunk`、`audio_state`、`interrupt`、`close`。
 
-服务端消息：`connected`、`text_delta`、`audio_delta`、`tool_call`、`tool_result`、`clear_audio_buffer`、`response_cancelled`、`response_started`、`response_done`、`error`。
+服务端消息：`connected`、`pipeline_stage`、`retrieval_result`、`text_delta`、`audio_delta`、`tool_call`、`tool_result`、`clear_audio_buffer`、`response_cancelled`、`response_started`、`response_done`、`error`。
+
+session 响应额外包含 `connection_id`。连接事件包含 `session_id`、`connection_id`、`turn_id`、`rag_database_id`；客户端只处理当前身份。`retrieval_result.result` 暴露 `matched`、`decision_score`、`decision_threshold`、`decision_score_type`、`rerank_applied`、`rerank_degraded`，每个结果包含 `vector_score` 和可空的 `rerank_score`。语音用 `commit_audio` 显式提交，后端检索后才手动触发 `response.create`。
 
 错误格式：
 

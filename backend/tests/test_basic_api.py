@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 def upload_txt(client, name: str, text: str):
     return client.post(
@@ -50,6 +55,14 @@ def test_rerank_settings_defaults(monkeypatch):
     assert settings.rerank_threshold == 0.50
     assert settings.rerank_timeout_seconds == 2.0
     assert settings.rerank_is_enabled is False
+
+
+def test_docs_name_physical_and_logical_rag_databases():
+    text = (PROJECT_ROOT / "docs/rag.md").read_text()
+    assert "storage/rag.db" in text
+    assert "逻辑 RAG 数据库" in text
+    assert "RERANK_THRESHOLD=0.50" in text
+    assert "SIMILARITY_THRESHOLD=0.35" in text
 
 
 def test_rag_databases_default_and_independent_prompts(client):

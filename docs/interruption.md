@@ -78,3 +78,9 @@ http://localhost:5173/?page=agent&diag=interrupt
 ```js
 window.__realtimeDiagnostics.results[0]
 ```
+
+## 检索阶段取消与切库
+
+打断同样适用于 `transcribing`、`retrieving` 和 `reranking`。即使尚无 `response_id`，当前异步 turn 也会被取消，且不会进入 `response.create`。关闭连接或切库时，后端先把 session/turn 标为 `cancelled`；transcription、retrieval、rerank 完成后，以及调用 `response.create` 前，都必须通过 `session_id + connection_id + turn_id + rag_database_id` 的 current 检查。
+
+切库顺序为：禁用输入/停止录音 → 取消旧 turn/session → 断开旧 Agent → 清空来源和音频 → 使用新 `rag_database_id` 创建 session 并自动重连。旧连接迟到事件因 `session_id`、`connection_id` 或数据库不匹配而被丢弃。

@@ -97,3 +97,9 @@ cd backend
 ```
 
 第一条命令应看到 `text_delta`、`audio_delta` 和 `response_done`。第二条命令应看到 `clear_audio_buffer` 和 `response_cancelled`。
+
+## 后端 RAG-first
+
+当前权威流程不是由模型自主决定是否调用 `rag_search`。文本从 `retrieving` 开始；语音显式提交后依次经过 `transcribing`、`retrieving`、可选 `reranking`、`generating`，后端最后手动调用 Qwen `response.create`。数据库 prompt 和 chunks 只来自 session 固定绑定的 `rag_database_id`，工具参数不能覆盖。
+
+切换数据库时前端禁用输入并停止录音，后端取消当前 turn/session、断开旧连接，再创建绑定新数据库的 session 并自动重连。每个事件携带 `session_id`、`connection_id`、`turn_id`、`rag_database_id`。用户可在检索中打断（不会创建回答），也可在生成/播报中打断（发送 `response.cancel` 并清空音频）。
