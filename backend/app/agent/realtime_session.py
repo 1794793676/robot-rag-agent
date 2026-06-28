@@ -40,6 +40,7 @@ class RealtimeAgentSession:
         self.store = store
         self._audio_commit_pending = False
         self._pending_audio_item_id: str | None = None
+        self._pending_audio_commit_event_id: str | None = None
         self._turn_task: asyncio.Task[None] | None = None
         self.qwen = QwenRealtimeClient(
             send_event=self.send_to_browser,
@@ -170,7 +171,9 @@ class RealtimeAgentSession:
                 return
             self._audio_commit_pending = True
             try:
-                await self.qwen.commit_audio_buffer()
+                self._pending_audio_commit_event_id = (
+                    await self.qwen.commit_audio_buffer()
+                )
             except Exception:
                 self._reset_audio_commit()
                 raise
@@ -217,12 +220,26 @@ class RealtimeAgentSession:
         if self._audio_commit_pending and item_id:
             self._pending_audio_item_id = item_id
 
-    async def _handle_audio_error(self) -> None:
-        self._reset_audio_commit()
+    async def _handle_audio_error(
+        self, referenced_event_id: str | None, error: dict[str, Any]
+    ) -> None:
+        code = str(error.get("code") or error.get("type") or "").lower()
+        audio_scoped = any(
+            marker in code
+            for marker in ("audio", "transcription", "input_audio_buffer")
+        )
+        correlated = bool(
+            referenced_event_id
+            and self._pending_audio_commit_event_id
+            and referenced_event_id == self._pending_audio_commit_event_id
+        )
+        if correlated or audio_scoped:
+            self._reset_audio_commit()
 
     def _reset_audio_commit(self) -> None:
         self._audio_commit_pending = False
         self._pending_audio_item_id = None
+        self._pending_audio_commit_event_id = None
 
     async def _schedule_turn(
         self, user_text: str, *, add_text_item: bool

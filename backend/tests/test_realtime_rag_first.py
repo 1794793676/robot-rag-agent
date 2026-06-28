@@ -375,7 +375,7 @@ def test_double_audio_commit_is_rejected_without_second_upstream_commit(monkeypa
     assert browser.sent[-1]["error"]["code"] == "AUDIO_COMMIT_PENDING"
 
 
-def test_empty_transcript_and_qwen_error_reset_audio_commit():
+def test_empty_transcript_resets_audio_commit():
     store = InMemorySessionStore()
     store.create("sess", "db")
     session = RealtimeAgentSession("sess", BrowserSocket(), store=store)
@@ -392,13 +392,71 @@ def test_empty_transcript_and_qwen_error_reset_audio_commit():
         )
     )
     assert session._audio_commit_pending is False
-    session._audio_commit_pending = True
-    asyncio.run(
-        session.qwen._handle_event(
-            {"type": "error", "error": {"message": "transcription failed"}}
-        )
+
+
+def test_unrelated_error_preserves_audio_commit_and_transcript_starts_turn():
+    store = InMemorySessionStore()
+    store.create("sess", "db")
+    orchestrator = RecordingOrchestrator([])
+    session = RealtimeAgentSession(
+        "sess", BrowserSocket(), store=store, orchestrator=orchestrator
     )
-    assert session._audio_commit_pending is False
+    session._audio_commit_pending = True
+    session._pending_audio_commit_event_id = "commit-1"
+
+    async def exercise():
+        await session.qwen._handle_event(
+            {
+                "type": "error",
+                "error": {
+                    "event_id": "tool-request",
+                    "code": "TOOL_FAILED",
+                    "message": "unrelated",
+                },
+            }
+        )
+        assert session._audio_commit_pending is True
+        await session.qwen._handle_event(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "transcript": "voice",
+            }
+        )
+        if session._turn_task:
+            await session._turn_task
+
+    asyncio.run(exercise())
+    assert orchestrator.calls[0][1] == "voice"
+
+
+def test_correlated_audio_commit_error_resets_and_allows_next_commit(monkeypatch):
+    store = InMemorySessionStore()
+    store.create("sess", "db")
+    session = RealtimeAgentSession("sess", BrowserSocket(), store=store)
+    commit_ids = iter(["commit-1", "commit-2"])
+
+    async def commit():
+        return next(commit_ids)
+
+    monkeypatch.setattr(session.qwen, "commit_audio_buffer", commit)
+
+    async def exercise():
+        await session._handle_browser_message({"type": "commit_audio"})
+        await session.qwen._handle_event(
+            {
+                "type": "error",
+                "error": {
+                    "event_id": "commit-1",
+                    "code": "INPUT_AUDIO_BUFFER_COMMIT_FAILED",
+                },
+            }
+        )
+        assert session._audio_commit_pending is False
+        await session._handle_browser_message({"type": "commit_audio"})
+
+    asyncio.run(exercise())
+    assert session._audio_commit_pending is True
+    assert session._pending_audio_commit_event_id == "commit-2"
 
 
 def test_response_creates_are_serialized_until_retired_pending_is_resolved():

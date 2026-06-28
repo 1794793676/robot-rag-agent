@@ -21,7 +21,9 @@ from app.services.rag_first_turn import TurnIdentity
 AgentEventSender = Callable[[dict[str, Any]], Awaitable[None]]
 TranscriptCallback = Callable[[str, str | None], Awaitable[None] | None]
 AudioCommitCallback = Callable[[str | None], Awaitable[None] | None]
-AudioErrorCallback = Callable[[], Awaitable[None] | None]
+AudioErrorCallback = Callable[
+    [str | None, dict[str, Any]], Awaitable[None] | None
+]
 ResponseGate = Callable[[TurnIdentity], bool]
 
 agent_log = logging.getLogger("agent")
@@ -142,10 +144,12 @@ class QwenRealtimeClient:
             }
         )
 
-    async def commit_audio_buffer(self) -> None:
+    async def commit_audio_buffer(self) -> str:
+        event_id = self._event_id()
         await self._send(
-            {"type": "input_audio_buffer.commit", "event_id": self._event_id()}
+            {"type": "input_audio_buffer.commit", "event_id": event_id}
         )
+        return event_id
 
     async def create_grounded_response(
         self, instructions: str | None, identity: TurnIdentity | None = None
@@ -419,7 +423,10 @@ class QwenRealtimeClient:
                 self.pending_response_event_id = None
                 self._response_create_slot.set()
             if self.audio_error_callback:
-                result = self.audio_error_callback()
+                error = event.get("error", {})
+                result = self.audio_error_callback(
+                    error.get("event_id"), error
+                )
                 if asyncio.iscoroutine(result):
                     await result
             if event_type == "error" and self.send_event:
