@@ -19,7 +19,9 @@ from app.core.config import get_settings
 from app.services.rag_first_turn import TurnIdentity
 
 AgentEventSender = Callable[[dict[str, Any]], Awaitable[None]]
-TranscriptCallback = Callable[[str], Awaitable[None] | None]
+TranscriptCallback = Callable[[str, str | None], Awaitable[None] | None]
+AudioCommitCallback = Callable[[str | None], Awaitable[None] | None]
+AudioErrorCallback = Callable[[], Awaitable[None] | None]
 ResponseGate = Callable[[TurnIdentity], bool]
 
 agent_log = logging.getLogger("agent")
@@ -59,11 +61,15 @@ class QwenRealtimeClient:
         send_event: AgentEventSender | None = None,
         transcript_callback: TranscriptCallback | None = None,
         response_gate: ResponseGate | None = None,
+        audio_commit_callback: AudioCommitCallback | None = None,
+        audio_error_callback: AudioErrorCallback | None = None,
     ):
         self.settings = get_settings()
         self.send_event = send_event
         self.transcript_callback = transcript_callback
         self.response_gate = response_gate
+        self.audio_commit_callback = audio_commit_callback
+        self.audio_error_callback = audio_error_callback
         self.session_id: str | None = None
         self.websocket: Any | None = None
         self.closed = False
@@ -304,8 +310,17 @@ class QwenRealtimeClient:
                 or event.get("item", {}).get("transcript")
                 or ""
             ).strip()
-            if transcript and self.transcript_callback:
-                result = self.transcript_callback(transcript)
+            if self.transcript_callback:
+                result = self.transcript_callback(
+                    transcript, event.get("item_id") or event.get("item", {}).get("id")
+                )
+                if asyncio.iscoroutine(result):
+                    await result
+        elif event_type == "input_audio_buffer.committed":
+            if self.audio_commit_callback:
+                result = self.audio_commit_callback(
+                    event.get("item_id") or event.get("item", {}).get("id")
+                )
                 if asyncio.iscoroutine(result):
                     await result
         elif event_type == "input_audio_buffer.speech_started" and self.send_event:
@@ -321,15 +336,20 @@ class QwenRealtimeClient:
                 await self.send_event(
                     self._response_event(identity, "response_done", rid)
                 )
-        elif event_type == "error" and self.send_event:
-            await self.send_event(
-                {
-                    "type": "error",
-                    "session_id": self.session_id,
-                    "message": event.get("error", {}).get("message", "Qwen Realtime error"),
-                    "detail": event.get("error", {}),
-                }
-            )
+        elif event_type == "error":
+            if self.audio_error_callback:
+                result = self.audio_error_callback()
+                if asyncio.iscoroutine(result):
+                    await result
+            if self.send_event:
+                await self.send_event(
+                    {
+                        "type": "error",
+                        "session_id": self.session_id,
+                        "message": event.get("error", {}).get("message", "Qwen Realtime error"),
+                        "detail": event.get("error", {}),
+                    }
+                )
         elif event_type in KNOWN_LIFECYCLE_EVENTS:
             agent_log.debug("qwen lifecycle event session=%s type=%s", self.session_id, event_type)
         elif event_type:

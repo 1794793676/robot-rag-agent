@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -38,10 +39,14 @@ class RealtimeAgentSession:
         self.orchestrator = orchestrator
         self.store = store
         self._audio_commit_pending = False
+        self._pending_audio_item_id: str | None = None
+        self._turn_task: asyncio.Task[None] | None = None
         self.qwen = QwenRealtimeClient(
             send_event=self.send_to_browser,
             transcript_callback=self._handle_transcript,
             response_gate=self._identity_is_current,
+            audio_commit_callback=self._handle_audio_committed,
+            audio_error_callback=self._handle_audio_error,
         )
 
     async def run(self) -> None:
@@ -52,8 +57,6 @@ class RealtimeAgentSession:
         try:
             await self.qwen.connect(self.session_id)
             await self.send_to_browser({"type": "connected", "session_id": self.session_id})
-            import asyncio
-
             qwen_task = asyncio.create_task(self.qwen.handle_events())
             browser_task = asyncio.create_task(self._browser_loop())
             done, pending = await asyncio.wait(
@@ -86,7 +89,9 @@ class RealtimeAgentSession:
             state.touch()
             interruption_controller.unregister_client(self.session_id)
             interruption_controller.unregister_sender(self.session_id)
+            await self._cancel_active_turn_task()
             self.store.cancel_session(self.session_id)
+            self._reset_audio_commit()
             await self.qwen.close()
 
     async def send_to_browser(self, message: dict[str, Any]) -> None:
@@ -147,34 +152,133 @@ class RealtimeAgentSession:
             text = str(message.get("text", ""))[:4000]
             state.last_user_text = text
             if text.strip():
-                await self._prepare_and_generate(text.strip(), add_text_item=True)
+                await self._schedule_turn(text.strip(), add_text_item=True)
         elif msg_type == "commit_audio":
+            if self._audio_commit_pending:
+                await self.send_to_browser(
+                    {
+                        "type": "error",
+                        "message": "An audio commit is already awaiting transcription",
+                        "error": {
+                            "code": "AUDIO_COMMIT_PENDING",
+                            "message": "已有语音正在等待转写",
+                            "detail": "Wait for the current transcription before committing again.",
+                        },
+                    }
+                )
+                return
             self._audio_commit_pending = True
-            await self.qwen.commit_audio_buffer()
+            try:
+                await self.qwen.commit_audio_buffer()
+            except Exception:
+                self._reset_audio_commit()
+                raise
             await self._emit_stage("transcribing")
         elif msg_type == "audio_state":
             state.is_user_speaking = bool(message.get("is_user_speaking"))
             agent_log.info("audio_state session=%s user_speaking=%s", self.session_id, state.is_user_speaking)
         elif msg_type == "interrupt":
+            await self._cancel_active_turn_task()
             await interruption_controller.interrupt(
                 self.session_id,
                 str(message.get("reason") or "user_speech"),
                 message.get("response_id"),
             )
         elif msg_type == "close":
+            await self._cancel_active_turn_task()
             self.store.cancel_session(self.session_id)
+            self._reset_audio_commit()
             await self.qwen.close()
         else:
             await self.send_to_browser({"type": "error", "message": f"Unknown message type: {msg_type}"})
 
-    async def _handle_transcript(self, transcript: str) -> None:
+    async def _handle_transcript(
+        self, transcript: str, item_id: str | None = None
+    ) -> None:
         if not self._audio_commit_pending:
             return
-        self._audio_commit_pending = False
+        if (
+            self._pending_audio_item_id
+            and item_id
+            and item_id != self._pending_audio_item_id
+        ):
+            return
+        self._reset_audio_commit()
+        if not transcript:
+            return
         state = self.store.get(self.session_id)
         if state:
             state.last_user_text = transcript
-        await self._prepare_and_generate(transcript, add_text_item=False)
+        await self._schedule_turn(transcript, add_text_item=False)
+
+    async def _handle_audio_committed(self, item_id: str | None) -> None:
+        if self._audio_commit_pending and item_id:
+            self._pending_audio_item_id = item_id
+
+    async def _handle_audio_error(self) -> None:
+        self._reset_audio_commit()
+
+    def _reset_audio_commit(self) -> None:
+        self._audio_commit_pending = False
+        self._pending_audio_item_id = None
+
+    async def _schedule_turn(
+        self, user_text: str, *, add_text_item: bool
+    ) -> None:
+        await self._cancel_active_turn_task()
+        self._turn_task = asyncio.create_task(
+            self._run_turn(user_text, add_text_item=add_text_item)
+        )
+        self._turn_task.add_done_callback(self._consume_turn_task_result)
+
+    @staticmethod
+    def _consume_turn_task_result(task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            task.exception()
+
+    async def _run_turn(
+        self, user_text: str, *, add_text_item: bool
+    ) -> None:
+        task = asyncio.current_task()
+        try:
+            await self._prepare_and_generate(
+                user_text, add_text_item=add_text_item
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            error_log.exception(
+                "agent turn failed session=%s", self.session_id
+            )
+            await self.send_to_browser(
+                {
+                    "type": "error",
+                    "message": "Agent turn failed",
+                    "error": {
+                        "code": "AGENT_TURN_FAILED",
+                        "message": "Agent turn failed",
+                        "detail": str(exc),
+                    },
+                }
+            )
+        finally:
+            if self._turn_task is task:
+                self._turn_task = None
+
+    async def _cancel_active_turn_task(self) -> None:
+        state = self.store.get(self.session_id)
+        if state and state.current_turn:
+            self.store.cancel_turn(
+                self.session_id, state.current_turn.turn_id
+            )
+        task = self._turn_task
+        self._turn_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     async def _prepare_and_generate(
         self, user_text: str, *, add_text_item: bool = False

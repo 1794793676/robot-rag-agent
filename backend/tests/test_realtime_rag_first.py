@@ -38,6 +38,17 @@ class RecordingOrchestrator:
         return GenerationContext(identity, text, True, "grounded", {})
 
 
+class SlowOrchestrator:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def prepare_turn(self, identity, text):
+        self.started.set()
+        await self.release.wait()
+        return GenerationContext(identity, text, True, "grounded", {})
+
+
 def test_qwen_manual_protocol_and_explicit_response_creation(monkeypatch):
     import app.agent.qwen_realtime_client as module
 
@@ -70,7 +81,9 @@ def test_qwen_transcription_event_calls_backend_without_creating_response():
     from app.agent.qwen_realtime_client import QwenRealtimeClient
 
     transcripts = []
-    qwen = QwenRealtimeClient(transcript_callback=transcripts.append)
+    qwen = QwenRealtimeClient(
+        transcript_callback=lambda transcript, _item_id: transcripts.append(transcript)
+    )
     qwen.session_id = "sess"
     qwen.websocket = QwenSocket()
 
@@ -271,3 +284,119 @@ def test_response_events_keep_bound_identity_and_suppress_unmapped_or_stale():
         for item in outbound
     )
     assert "resp-old" not in qwen.response_identities
+
+
+def test_interrupt_remains_responsive_during_slow_retrieval(monkeypatch):
+    store = InMemorySessionStore()
+    store.create("sess", "db")
+    slow = SlowOrchestrator()
+    session = RealtimeAgentSession(
+        "sess", BrowserSocket(), orchestrator=slow, store=store
+    )
+    session.qwen.websocket = QwenSocket()
+    created = []
+
+    async def create_response(*args):
+        created.append(args)
+
+    monkeypatch.setattr(session.qwen, "create_grounded_response", create_response)
+
+    async def exercise():
+        await asyncio.wait_for(
+            session._handle_browser_message({"type": "user_text", "text": "q"}), 0.2
+        )
+        await asyncio.wait_for(slow.started.wait(), 0.2)
+        await asyncio.wait_for(
+            session._handle_browser_message({"type": "interrupt"}), 0.2
+        )
+        slow.release.set()
+        await asyncio.sleep(0)
+
+    asyncio.run(exercise())
+    assert created == []
+
+
+def test_close_remains_responsive_during_slow_retrieval(monkeypatch):
+    store = InMemorySessionStore()
+    state = store.create("sess", "db")
+    slow = SlowOrchestrator()
+    session = RealtimeAgentSession(
+        "sess", BrowserSocket(), orchestrator=slow, store=store
+    )
+    session.qwen.websocket = QwenSocket()
+
+    async def exercise():
+        await asyncio.wait_for(
+            session._handle_browser_message({"type": "user_text", "text": "q"}), 0.2
+        )
+        await asyncio.wait_for(slow.started.wait(), 0.2)
+        await asyncio.wait_for(
+            session._handle_browser_message({"type": "close"}), 0.2
+        )
+        slow.release.set()
+        await asyncio.sleep(0)
+
+    asyncio.run(exercise())
+    assert state.status == "cancelled"
+
+
+def test_transcript_callback_schedules_retrieval_without_blocking():
+    store = InMemorySessionStore()
+    store.create("sess", "db")
+    slow = SlowOrchestrator()
+    session = RealtimeAgentSession(
+        "sess", BrowserSocket(), orchestrator=slow, store=store
+    )
+    session._audio_commit_pending = True
+
+    async def exercise():
+        await asyncio.wait_for(session._handle_transcript("voice", None), 0.2)
+        await asyncio.wait_for(slow.started.wait(), 0.2)
+        await session._cancel_active_turn_task()
+
+    asyncio.run(exercise())
+
+
+def test_double_audio_commit_is_rejected_without_second_upstream_commit(monkeypatch):
+    store = InMemorySessionStore()
+    store.create("sess", "db")
+    browser = BrowserSocket()
+    session = RealtimeAgentSession("sess", browser, store=store)
+    commits = []
+
+    async def commit():
+        commits.append(True)
+
+    monkeypatch.setattr(session.qwen, "commit_audio_buffer", commit)
+    asyncio.run(session._handle_browser_message({"type": "commit_audio"}))
+    asyncio.run(session._handle_browser_message({"type": "commit_audio"}))
+
+    assert len(commits) == 1
+    assert browser.sent[-1]["error"]["code"] == "AUDIO_COMMIT_PENDING"
+
+
+def test_empty_transcript_and_qwen_error_reset_audio_commit():
+    store = InMemorySessionStore()
+    store.create("sess", "db")
+    session = RealtimeAgentSession("sess", BrowserSocket(), store=store)
+    session._audio_commit_pending = True
+    session._pending_audio_item_id = "item-1"
+
+    asyncio.run(
+        session.qwen._handle_event(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "item-1",
+                "transcript": "",
+            }
+        )
+    )
+    assert session._audio_commit_pending is False
+
+    session._audio_commit_pending = True
+    asyncio.run(
+        session.qwen._handle_event(
+            {"type": "error", "error": {"message": "transcription failed"}}
+        )
+    )
+    assert session._audio_commit_pending is False
