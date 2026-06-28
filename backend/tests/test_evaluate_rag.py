@@ -14,7 +14,8 @@ from scripts.evaluate_rag import (
 )
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "rag_evaluation.json"
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "rag_eval"
+FIXTURE = FIXTURE_DIR
 
 
 def test_fixture_has_required_coverage():
@@ -89,3 +90,16 @@ def test_vector_cli_writes_json_and_markdown(tmp_path):
     payload = json.loads(output.with_suffix(".json").read_text())
     assert payload["case_count"] >= 100
     assert output.with_suffix(".md").read_text().startswith("# RAG Evaluation Report")
+
+
+def test_vector_cli_accepts_fixture_directory(tmp_path):
+    output = tmp_path / "report"
+    command = [
+        sys.executable, "-m", "scripts.evaluate_rag",
+        "--fixtures", "tests/fixtures/rag_eval",
+        "--mode", "vector", "--output", str(output),
+    ]
+    completed = subprocess.run(command, cwd=Path(__file__).parents[1], text=True, capture_output=True)
+    assert completed.returncode == 0, completed.stderr
+    assert output.with_suffix(".json").is_file()
+    assert output.with_suffix(".md").is_file()

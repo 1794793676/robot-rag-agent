@@ -11,8 +11,18 @@ from typing import Any, Iterable
 
 
 def load_fixture(path: str | Path) -> list[dict[str, Any]]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    fixture_path = Path(path)
+    fixture_root = fixture_path if fixture_path.is_dir() else fixture_path.parent
+    if fixture_path.is_dir():
+        fixture_path = fixture_path / "cases.json"
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
     if isinstance(payload, list):
+        for case in payload:
+            for document in case.get("documents", []):
+                if "path" in document and "text" not in document:
+                    document["text"] = (
+                        fixture_root / document["path"]
+                    ).read_text(encoding="utf-8")
         return payload
     cases: list[dict[str, Any]] = []
     offset = 0
