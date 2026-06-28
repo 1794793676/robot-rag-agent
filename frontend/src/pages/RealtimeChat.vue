@@ -440,7 +440,10 @@ watch(
   () => props.ragDatabaseId,
   async (next, previous) => {
     const wasConnected = Boolean(
-      connectionAttempts.current || status.value === 'switching_database',
+      connectionAttempts.current
+      || connectionAttempts.pending
+      || status.value === 'connecting'
+      || status.value === 'switching_database',
     )
     if (!previous || !next || next === previous || !wasConnected) return
     const sequence = ++databaseSwitchSequence

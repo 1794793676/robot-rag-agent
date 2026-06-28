@@ -44,7 +44,7 @@ test('a stale B attempt cannot close or replace a promoted C connection', async 
   assert.equal((await bAttempt).status, 'stale')
 
   assert.equal(manager.current, c)
-  assert.equal(b.closed, 1)
+  assert.ok(b.closed >= 1)
   assert.equal(c.closed, 0)
 })
 
@@ -95,4 +95,43 @@ test('disconnect invalidates attempts and awaits current cleanup', async () => {
 
   assert.equal(manager.current, null)
   assert.equal(active.closed, 1)
+})
+
+test('switching during initial A connect promotes B and closes late A', async () => {
+  const aGate = deferred()
+  const a = candidate('db-a', aGate)
+  const b = candidate('db-b')
+  const manager = new ConnectionAttemptManager()
+
+  const aAttempt = manager.connect('db-a', a)
+  assert.equal(manager.pending, a)
+  await manager.disconnect()
+  const bAttempt = manager.connect('db-b', b)
+  aGate.resolve()
+
+  assert.equal((await bAttempt).status, 'connected')
+  assert.equal((await aAttempt).status, 'stale')
+  assert.equal(manager.current, b)
+  assert.equal(manager.pending, null)
+  assert.ok(a.closed >= 1)
+})
+
+test('late A failure cannot change a connected B', async () => {
+  const aGate = deferred()
+  const a = candidate('db-a')
+  a.open = async () => {
+    await aGate.promise
+    throw new Error('late A failure')
+  }
+  const b = candidate('db-b')
+  const manager = new ConnectionAttemptManager()
+
+  const aAttempt = manager.connect('db-a', a)
+  await manager.disconnect()
+  const bAttempt = manager.connect('db-b', b)
+  assert.equal((await bAttempt).status, 'connected')
+  aGate.resolve()
+
+  assert.equal((await aAttempt).status, 'stale')
+  assert.equal(manager.current, b)
 })

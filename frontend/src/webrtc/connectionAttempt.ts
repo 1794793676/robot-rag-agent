@@ -16,6 +16,7 @@ export type AttemptResult =
 
 export class ConnectionAttemptManager<T extends ConnectionCandidate> {
   current: T | null = null
+  pending: T | null = null
   private sequence = 0
 
   async connect(
@@ -24,6 +25,11 @@ export class ConnectionAttemptManager<T extends ConnectionCandidate> {
     isCurrent: () => boolean = () => true,
   ): Promise<AttemptResult> {
     const sequence = ++this.sequence
+    const previousPending = this.pending
+    this.pending = candidate
+    if (previousPending && previousPending !== candidate) {
+      await previousPending.close()
+    }
     try {
       const session = await candidate.open(databaseId)
       if (
@@ -34,10 +40,12 @@ export class ConnectionAttemptManager<T extends ConnectionCandidate> {
         || !session.connection_id
       ) {
         await candidate.close()
+        if (this.pending === candidate) this.pending = null
         return { status: 'stale' }
       }
       const previous = this.current
       this.current = candidate
+      if (this.pending === candidate) this.pending = null
       if (previous && previous !== candidate) await previous.close()
       if (sequence !== this.sequence || this.current !== candidate) {
         return { status: 'stale' }
@@ -45,6 +53,7 @@ export class ConnectionAttemptManager<T extends ConnectionCandidate> {
       return { status: 'connected', session }
     } catch (error) {
       await candidate.close()
+      if (this.pending === candidate) this.pending = null
       if (sequence !== this.sequence) return { status: 'stale' }
       return { status: 'failed', error }
     }
@@ -53,7 +62,10 @@ export class ConnectionAttemptManager<T extends ConnectionCandidate> {
   async disconnect(): Promise<void> {
     this.sequence += 1
     const current = this.current
+    const pending = this.pending
     this.current = null
+    this.pending = null
+    if (pending && pending !== current) await pending.close()
     if (current) await current.close()
   }
 }
