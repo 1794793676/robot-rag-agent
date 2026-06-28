@@ -5,10 +5,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
+
+# Direct execution sets sys.path[0] to backend/scripts rather than backend.
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 VECTOR_GRID = [round(.25 + i * .05, 2) for i in range(8)]
 RERANK_GRID = [round(.30 + i * .05, 2) for i in range(11)]

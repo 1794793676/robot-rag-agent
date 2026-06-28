@@ -140,3 +140,18 @@ def test_vector_cli_accepts_fixture_directory(tmp_path):
     assert completed.returncode == 0, completed.stderr
     assert (output / "report.json").is_file()
     assert (output / "report.md").is_file()
+
+
+def test_direct_script_cli_bootstraps_backend_imports(tmp_path):
+    output = tmp_path / "direct-report"
+    command = [
+        ".venv/bin/python", "scripts/evaluate_rag.py",
+        "--fixtures", "tests/fixtures/rag_eval",
+        "--mode", "vector", "--output", str(output),
+    ]
+    completed = subprocess.run(
+        command, cwd=Path(__file__).parents[1], text=True, capture_output=True,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert (output / "report.json").is_file()
