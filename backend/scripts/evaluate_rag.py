@@ -114,7 +114,9 @@ def rerank_results(case: dict[str, Any], fake: bool = False, candidate_k: int = 
                    similarity_threshold: float = 0.0) -> list[dict[str, Any]]:
     candidates = [item for item in vector_results(case)
                   if item["score"] >= similarity_threshold][:candidate_k]
-    documents_by_id = {doc["doc_id"]: doc for doc in case["documents"]}
+    documents_by_id = {
+        (doc["doc_id"], doc.get("chunk_id")): doc for doc in case["documents"]
+    }
     if fake:
         reranked = [dict(item, vector_score=item["score"],
                          score=item.get("fake_rerank_score", item["score"]))
@@ -125,7 +127,10 @@ def rerank_results(case: dict[str, Any], fake: bool = False, candidate_k: int = 
     from app.core.config import Settings
     from app.rag.reranker import DashScopeReranker
 
-    docs = [documents_by_id[item["doc_id"]] for item in candidates]
+    docs = [
+        documents_by_id[(item["doc_id"], item.get("chunk_id"))]
+        for item in candidates
+    ]
     outcome = DashScopeReranker(Settings()).rerank(
         case["query"], [doc["text"] for doc in docs], len(docs))
     if outcome.degraded:
@@ -335,10 +340,15 @@ def main(argv: list[str] | None = None) -> int:
             for metric in ("hit_rate", "mrr", "false_hit_rate",
                            "false_rejection_rate", "precision_at_k", "recall_at_k")
         }
+    if args.mode == "rerank" and not args.fake_reranker:
+        from app.core.config import Settings
+        model_id = Settings().rerank_model
+    else:
+        model_id = ("deterministic-embedder" if args.mode == "vector"
+                    else "fake-reranker")
     report = {
         "dataset_version": "1.0", "mode": args.mode, "case_count": len(cases),
-        "model_id": "deterministic-embedder" if args.mode == "vector"
-        else ("fake-reranker" if args.fake_reranker else "qwen3-rerank"),
+        "model_id": model_id,
         "config": {"candidate_k": args.candidate_k, "top_k": args.k,
                    "defaults": DEFAULT_THRESHOLDS, "similarity_grid": VECTOR_GRID,
                    "rerank_grid": RERANK_GRID},

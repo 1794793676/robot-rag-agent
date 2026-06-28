@@ -111,6 +111,23 @@ def test_fake_reranker_changes_order_and_pair_calibration():
     assert result["selected_rerank_threshold"] == .5
 
 
+def test_reranker_preserves_two_chunks_from_same_document():
+    case = {
+        "case_id": "chunks", "rag_database_id": "primary", "query": "reset",
+        "relevant_doc_ids": ["shared"], "relevant_chunk_ids": ["second"],
+        "documents": [
+            {"doc_id": "shared", "chunk_id": "first", "database_id": "primary",
+             "text": "reset overview", "fake_rerank_score": .2},
+            {"doc_id": "shared", "chunk_id": "second", "database_id": "primary",
+             "text": "reset procedure", "fake_rerank_score": .9},
+        ],
+    }
+    results = rerank_results(case, fake=True)
+    assert [(item["doc_id"], item["chunk_id"]) for item in results] == [
+        ("shared", "second"), ("shared", "first")
+    ]
+
+
 def test_vector_scoring_is_scoped_to_case_database():
     case = {
         "query": "secret payroll policy",
