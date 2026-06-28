@@ -4,8 +4,8 @@
 
 ## 当前实现范围
 
-- TXT、DOCX、文本型 PDF 上传、去重、列表、详情、替换和删除
-- DOCX 段落与表格提取，PDF 分页文本提取
+- TXT、DOCX、XLS、XLSX、文本型 PDF 上传、批量上传、去重、列表、详情、替换和删除
+- DOCX 段落与表格提取，XLS/XLSX 工作表表格提取，PDF 分页文本提取
 - 保留标题上下文并优先在句末边界切分 chunk
 - DashScope `text-embedding-v4` 云端 embedding
 - 未配置 Key 时的稳定 deterministic fake embedding
@@ -20,7 +20,7 @@
 - 实时语音问答页面、麦克风输入、流式文本、流式音频播放和打断机制
 - 基础日志：`logs/agent.log`、`logs/webrtc.log`、`logs/tool_calls.log`、`logs/errors.log`
 
-本项目**不支持 OCR、不解析图片、不支持扫描版 PDF、不包含机器人端、人脸识别或本地大模型**。扫描版 PDF 请先在系统外完成 OCR，再上传可复制文本的 PDF、DOCX 或 TXT。
+本项目**不支持 OCR、不解析图片、不支持扫描版 PDF、不包含机器人端、人脸识别或本地大模型**。扫描版 PDF 请先在系统外完成 OCR，再上传可复制文本的 PDF、DOCX、XLS、XLSX 或 TXT。
 
 ## 目录
 
@@ -129,7 +129,7 @@ chmod +x run_all_dev.sh backend/run_dev.sh
 
 1. 打开前端并确认右上角显示“后端在线”。
 2. 选择或创建 RAG 数据库，按需编辑该数据库的独立 prompt。
-3. 上传 TXT、DOCX 或文本型 PDF。
+3. 上传 TXT、DOCX、XLS、XLSX 或文本型 PDF，可一次选择多个文件批量上传。
 4. 在文档表格中查看 chunk、替换或删除文档。
 5. 在问答区域输入与文档相关的问题。
 6. 查看 answer、confidence 和 sources；未配置 Key 时 answer 为离线抽取结果，配置 Key 时为证据约束的 Chat 生成结果。
@@ -146,7 +146,9 @@ chmod +x run_all_dev.sh backend/run_dev.sh
 | POST | `/api/rag-databases` | 创建 RAG 数据库 |
 | GET | `/api/rag-databases/{database_id}` | RAG 数据库详情 |
 | PUT | `/api/rag-databases/{database_id}/prompt` | 更新指定数据库 prompt |
+| DELETE | `/api/rag-databases/{database_id}` | 删除非默认 RAG 数据库及其文档、索引 |
 | POST | `/api/documents?rag_database_id=...` | multipart 上传文档 |
+| POST | `/api/documents/batch?rag_database_id=...` | multipart 批量上传文档，字段名 `files` |
 | GET | `/api/documents?rag_database_id=...` | 文档列表 |
 | GET | `/api/documents/{doc_id}?rag_database_id=...` | 文档详情 |
 | GET | `/api/documents/{doc_id}/chunks?rag_database_id=...` | 文档 chunks |
@@ -219,7 +221,7 @@ curl -X POST http://localhost:8000/api/qa/ask \
 
 ### PDF 提示不支持 OCR
 
-PDF 没有文本层或提取文本少于 20 字。当前版本不会调用 OCR，请上传可复制文本的 PDF 或 DOCX。
+PDF 没有文本层或提取文本少于 20 字。当前版本不会调用 OCR，请上传可复制文本的 PDF、DOCX、XLS、XLSX 或 TXT。
 
 ### hnswlib 安装失败
 

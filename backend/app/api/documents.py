@@ -53,27 +53,58 @@ class ResponseWithStatus(Response):
 
     media_type = "application/json"
 
-    def __new__(cls, payload: dict, status_code: int):
+    def __new__(cls, payload: object, status_code: int):
         from fastapi.responses import JSONResponse
         from fastapi.encoders import jsonable_encoder
 
         return JSONResponse(content=jsonable_encoder(payload), status_code=status_code)
 
 
+@router.post("/batch", response_model=list[DocumentDetail], status_code=status.HTTP_201_CREATED)
+async def upload_documents_batch(
+    request: Request,
+    rag_database_id: str | None = None,
+    files: list[UploadFile] = File(...),
+):
+    if not files:
+        raise HTTPException(status_code=400, detail="请至少选择一个文件")
+    with SessionLocal() as session:
+        try:
+            rag_database = request.app.state.rag_database_service.resolve(
+                session, rag_database_id
+            )
+            payload = []
+            for upload in files:
+                document, _ = await request.app.state.document_service.create(
+                    session, upload, rag_database
+                )
+                payload.append(
+                    request.app.state.document_service.to_dict(
+                        session, document, detail=True
+                    )
+                )
+            return ResponseWithStatus(payload, 201)
+        except Exception as exc:
+            raise _translate_error(exc) from exc
+
+
 @router.get("", response_model=list[DocumentSummary])
 def list_documents(request: Request, rag_database_id: str | None = None):
     with SessionLocal() as session:
-        rag_database = request.app.state.rag_database_service.resolve(
-            session, rag_database_id
-        )
-        documents = session.scalars(
-            select(Document).order_by(Document.created_at.desc())
-            .where(Document.rag_database_id == rag_database.id)
-        ).all()
-        return [
-            request.app.state.document_service.to_dict(session, document)
-            for document in documents
-        ]
+        try:
+            rag_database = request.app.state.rag_database_service.resolve(
+                session, rag_database_id
+            )
+            documents = session.scalars(
+                select(Document).order_by(Document.created_at.desc())
+                .where(Document.rag_database_id == rag_database.id)
+            ).all()
+            return [
+                request.app.state.document_service.to_dict(session, document)
+                for document in documents
+            ]
+        except Exception as exc:
+            raise _translate_error(exc) from exc
 
 
 @router.get("/{doc_id}", response_model=DocumentDetail)

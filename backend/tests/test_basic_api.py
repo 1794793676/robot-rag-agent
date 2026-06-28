@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 import re
 
+from openpyxl import Workbook
+import xlwt
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -20,6 +23,33 @@ def create_rag_database(client, name: str, prompt: str = ""):
     response = client.post("/api/rag-databases", json={"name": name, "prompt": prompt})
     assert response.status_code == 201
     return response.json()["rag_database_id"]
+
+
+def xlsx_bytes() -> bytes:
+    buffer = BytesIO()
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "参数表"
+    sheet.append(["部件", "参数", "数值"])
+    sheet.append(["电池", "额定电压", "48V"])
+    sheet.append(["电机", "最大转速", "3000rpm"])
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def xls_bytes() -> bytes:
+    buffer = BytesIO()
+    workbook = xlwt.Workbook()
+    sheet = workbook.add_sheet("参数表")
+    rows = [
+        ["部件", "参数", "数值"],
+        ["电池", "额定电压", "48V"],
+    ]
+    for row_index, row in enumerate(rows):
+        for column_index, value in enumerate(row):
+            sheet.write(row_index, column_index, value)
+    workbook.save(buffer)
+    return buffer.getvalue()
 
 
 def test_health(client):
@@ -158,6 +188,78 @@ def test_upload_deduplicate_list_and_chunks(client):
     assert chunks.json()[0]["char_count"] > 0
 
 
+def test_upload_xlsx_indexes_sheet_rows_for_search(client):
+    created = client.post(
+        "/api/documents",
+        files={
+            "file": (
+                "robot-params.xlsx",
+                xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert created.status_code == 201
+    payload = created.json()
+    assert payload["filename"] == "robot-params.xlsx"
+    assert payload["file_type"] == "xlsx"
+    assert payload["chunk_count"] >= 1
+
+    chunks = client.get(f"/api/documents/{payload['doc_id']}/chunks")
+    assert chunks.status_code == 200
+    assert "工作表 参数表 / 行 1-3" in chunks.json()[0]["text"]
+    assert "额定电压" in chunks.json()[0]["text"]
+
+    search = client.post("/api/qa/search", json={"query": "电池额定电压", "top_k": 3})
+    assert search.status_code == 200
+    assert search.json()["results"]
+    assert "48V" in search.json()["results"][0]["text"]
+
+
+def test_upload_xls_indexes_sheet_rows_for_search(client):
+    created = client.post(
+        "/api/documents",
+        files={
+            "file": (
+                "legacy-params.xls",
+                xls_bytes(),
+                "application/vnd.ms-excel",
+            )
+        },
+    )
+    assert created.status_code == 201
+    payload = created.json()
+    assert payload["filename"] == "legacy-params.xls"
+    assert payload["file_type"] == "xls"
+
+    search = client.post("/api/qa/search", json={"query": "电池额定电压", "top_k": 3})
+    assert search.status_code == 200
+    assert search.json()["results"]
+    assert "48V" in search.json()["results"][0]["text"]
+
+
+def test_batch_upload_documents_indexes_each_file(client):
+    response = client.post(
+        "/api/documents/batch",
+        files=[
+            ("files", ("alpha.txt", "Alpha 机器人使用红色电池。".encode(), "text/plain")),
+            ("files", ("legacy-params.xls", xls_bytes(), "application/vnd.ms-excel")),
+        ],
+    )
+    assert response.status_code == 201
+    payload = response.json()
+    assert [item["filename"] for item in payload] == ["alpha.txt", "legacy-params.xls"]
+    assert [item["file_type"] for item in payload] == ["txt", "xls"]
+    assert all(item["chunk_count"] >= 1 for item in payload)
+
+    documents = client.get("/api/documents").json()
+    assert {item["filename"] for item in documents} == {"alpha.txt", "legacy-params.xls"}
+
+    search = client.post("/api/qa/search", json={"query": "红色电池", "top_k": 3})
+    assert search.status_code == 200
+    assert "红色电池" in search.json()["results"][0]["text"]
+
+
 def test_documents_and_search_are_scoped_by_rag_database(client):
     db_a = create_rag_database(client, "A")
     db_b = create_rag_database(client, "B")
@@ -213,6 +315,32 @@ def test_cross_database_document_access_returns_404(client):
     assert client.delete(
         f"/api/documents/{uploaded['doc_id']}?rag_database_id={db_b}"
     ).status_code == 404
+
+
+def test_delete_rag_database_removes_documents_files_and_vectors(client):
+    db_id = create_rag_database(client, "待删除库")
+    uploaded = client.post(
+        f"/api/documents?rag_database_id={db_id}",
+        files={"file": ("delete-me.txt", "删除库专用资料。".encode(), "text/plain")},
+    )
+    assert uploaded.status_code == 201
+    doc = uploaded.json()
+    stored_file = client.app.state.settings.files_dir / f"{doc['doc_id']}.txt"
+    assert stored_file.exists()
+
+    assert client.delete("/api/rag-databases/default").status_code == 400
+
+    deleted = client.delete(f"/api/rag-databases/{db_id}")
+    assert deleted.status_code == 204
+    assert not stored_file.exists()
+    assert client.get(f"/api/rag-databases/{db_id}").status_code == 404
+    assert client.get(f"/api/documents?rag_database_id={db_id}").status_code == 404
+
+    search = client.post(
+        "/api/qa/search",
+        json={"rag_database_id": db_id, "query": "删除库专用资料", "top_k": 3},
+    )
+    assert search.status_code == 404
 
 
 def test_search_ask_replace_and_delete(client):

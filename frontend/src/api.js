@@ -12,6 +12,8 @@ export const createRagDatabase = (name, prompt = '') =>
 export const getRagDatabase = (databaseId) => api.get(`/api/rag-databases/${databaseId}`)
 export const updateRagDatabasePrompt = (databaseId, prompt) =>
   api.put(`/api/rag-databases/${databaseId}/prompt`, { prompt })
+export const deleteRagDatabase = (databaseId) =>
+  api.delete(`/api/rag-databases/${databaseId}`)
 
 const databaseParams = (ragDatabaseId) => ({
   params: ragDatabaseId ? { rag_database_id: ragDatabaseId } : {},
@@ -28,6 +30,15 @@ export function uploadDocument(file, onUploadProgress, ragDatabaseId) {
   const form = new FormData()
   form.append('file', file)
   return api.post('/api/documents', form, {
+    ...databaseParams(ragDatabaseId),
+    onUploadProgress,
+  })
+}
+
+export function uploadDocumentsBatch(files, onUploadProgress, ragDatabaseId) {
+  const form = new FormData()
+  files.forEach((file) => form.append('files', file))
+  return api.post('/api/documents/batch', form, {
     ...databaseParams(ragDatabaseId),
     onUploadProgress,
   })

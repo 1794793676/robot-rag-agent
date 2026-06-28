@@ -1,8 +1,9 @@
-"""Text extraction for txt, docx, and text-layer PDFs."""
+"""Text extraction for txt, docx, xls/xlsx, and text-layer PDFs."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 import re
 
@@ -11,7 +12,9 @@ from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
 from docx.table import Table
 from docx.text.paragraph import Paragraph
+from openpyxl import load_workbook
 from pypdf import PdfReader
+import xlrd
 
 
 class DocumentParseError(ValueError):
@@ -44,6 +47,31 @@ def _table_to_markdown(table) -> str:
     rows = [[cell.text.strip().replace("\n", " ") for cell in row.cells] for row in table.rows]
     if not rows:
         return ""
+    width = max(len(row) for row in rows)
+    normalized = [row + [""] * (width - len(row)) for row in rows]
+    header = "| " + " | ".join(normalized[0]) + " |"
+    separator = "| " + " | ".join(["---"] * width) + " |"
+    body = ["| " + " | ".join(row) + " |" for row in normalized[1:]]
+    return "\n".join([header, separator, *body])
+
+
+def _cell_to_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value).strip().replace("\n", " ")
+
+
+def _trim_row(row: list[str]) -> list[str]:
+    while row and not row[-1]:
+        row.pop()
+    return row
+
+
+def _rows_to_markdown(rows: list[list[str]]) -> str:
     width = max(len(row) for row in rows)
     normalized = [row + [""] * (width - len(row)) for row in rows]
     header = "| " + " | ".join(normalized[0]) + " |"
@@ -114,6 +142,100 @@ def _parse_docx(path: Path) -> list[ParsedSection]:
     return sections
 
 
+def _parse_xlsx(path: Path) -> list[ParsedSection]:
+    try:
+        workbook = load_workbook(path, read_only=True, data_only=True)
+    except Exception as exc:
+        raise DocumentParseError(f"XLSX 解析失败：{exc}") from exc
+
+    sections: list[ParsedSection] = []
+    try:
+        for sheet in workbook.worksheets:
+            current_rows: list[tuple[int, list[str]]] = []
+
+            def flush_rows() -> None:
+                if not current_rows:
+                    return
+                start_row = current_rows[0][0]
+                end_row = current_rows[-1][0]
+                rows = [row for _, row in current_rows]
+                text = _rows_to_markdown(rows)
+                sections.append(
+                    ParsedSection(
+                        text=text,
+                        heading=f"工作表 {sheet.title} / 行 {start_row}-{end_row}",
+                    )
+                )
+                current_rows.clear()
+
+            for row_index, raw_row in enumerate(
+                sheet.iter_rows(values_only=True), start=1
+            ):
+                row = _trim_row([_cell_to_text(value) for value in raw_row])
+                if not row or not any(row):
+                    flush_rows()
+                    continue
+                current_rows.append((row_index, row))
+            flush_rows()
+    finally:
+        workbook.close()
+
+    if not sections:
+        raise DocumentParseError("XLSX 文档没有可用文本")
+    return sections
+
+
+def _xls_value_to_text(value) -> str:
+    if value == "":
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return _cell_to_text(value)
+
+
+def _parse_xls(path: Path) -> list[ParsedSection]:
+    try:
+        workbook = xlrd.open_workbook(str(path), on_demand=True)
+    except Exception as exc:
+        raise DocumentParseError(f"XLS 解析失败：{exc}") from exc
+
+    sections: list[ParsedSection] = []
+    try:
+        for sheet in workbook.sheets():
+            current_rows: list[tuple[int, list[str]]] = []
+
+            def flush_rows() -> None:
+                if not current_rows:
+                    return
+                start_row = current_rows[0][0]
+                end_row = current_rows[-1][0]
+                rows = [row for _, row in current_rows]
+                sections.append(
+                    ParsedSection(
+                        text=_rows_to_markdown(rows),
+                        heading=f"工作表 {sheet.name} / 行 {start_row}-{end_row}",
+                    )
+                )
+                current_rows.clear()
+
+            for zero_based_index in range(sheet.nrows):
+                row_index = zero_based_index + 1
+                row = _trim_row(
+                    [_xls_value_to_text(value) for value in sheet.row_values(zero_based_index)]
+                )
+                if not row or not any(row):
+                    flush_rows()
+                    continue
+                current_rows.append((row_index, row))
+            flush_rows()
+    finally:
+        workbook.release_resources()
+
+    if not sections:
+        raise DocumentParseError("XLS 文档没有可用文本")
+    return sections
+
+
 def _parse_pdf(path: Path) -> list[ParsedSection]:
     try:
         reader = PdfReader(str(path))
@@ -135,9 +257,15 @@ def _parse_pdf(path: Path) -> list[ParsedSection]:
 def parse_document(path: Path, file_type: str) -> list[ParsedSection]:
     """Parse a document into page-aware text sections."""
 
-    parsers = {"txt": _parse_txt, "docx": _parse_docx, "pdf": _parse_pdf}
+    parsers = {
+        "txt": _parse_txt,
+        "docx": _parse_docx,
+        "xls": _parse_xls,
+        "xlsx": _parse_xlsx,
+        "pdf": _parse_pdf,
+    }
     try:
         parser = parsers[file_type]
     except KeyError as exc:
-        raise DocumentParseError("仅支持 txt、docx、pdf 文件") from exc
+        raise DocumentParseError("仅支持 txt、docx、xls、xlsx、pdf 文件") from exc
     return parser(path)

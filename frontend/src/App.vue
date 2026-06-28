@@ -4,6 +4,7 @@ import RealtimeChat from './pages/RealtimeChat.vue'
 import {
   askQuestion,
   createRagDatabase,
+  deleteRagDatabase,
   deleteDocument,
   errorMessage,
   getChunks,
@@ -14,6 +15,7 @@ import {
   replaceDocument,
   updateRagDatabasePrompt,
   uploadDocument,
+  uploadDocumentsBatch,
 } from './api'
 
 const backend = ref({ connected: false, detail: '检查中…' })
@@ -24,7 +26,7 @@ const newDatabaseName = ref('')
 const promptDraft = ref('')
 const promptStatus = ref('')
 const documents = ref([])
-const selectedFile = ref(null)
+const selectedFiles = ref([])
 const uploadStatus = ref('')
 const uploadProgress = ref(0)
 const busy = ref(false)
@@ -150,29 +152,64 @@ async function createDatabase() {
   }
 }
 
+async function removeDatabase() {
+  const database = selectedRagDatabase.value
+  if (!database || database.is_default) {
+    promptStatus.value = '默认数据库不能删除'
+    return
+  }
+  if (!window.confirm(`确认删除 RAG 数据库“${database.name}”？此操作会删除该数据库下的文档和索引。`)) return
+  busy.value = true
+  try {
+    await deleteRagDatabase(database.rag_database_id)
+    selectedRagDatabaseId.value = ''
+    selectedDocument.value = null
+    documents.value = []
+    chunks.value = []
+    qaResult.value = null
+    qaError.value = ''
+    await refreshRagDatabases()
+    promptStatus.value = `已删除数据库：${database.name}`
+  } catch (error) {
+    promptStatus.value = `数据库删除失败：${errorMessage(error)}`
+  } finally {
+    busy.value = false
+  }
+}
+
 function updateProgress(event) {
   if (event.total) uploadProgress.value = Math.round((event.loaded * 100) / event.total)
 }
 
 async function submitUpload() {
-  if (!selectedFile.value) {
-    uploadStatus.value = '请先选择 txt、docx 或 pdf 文件'
+  if (!selectedFiles.value.length) {
+    uploadStatus.value = '请先选择 txt、docx、xls、xlsx 或 pdf 文件'
     return
   }
   busy.value = true
   uploadProgress.value = 0
-  uploadStatus.value = '上传并处理文档中…'
+  uploadStatus.value = selectedFiles.value.length > 1 ? '批量上传并处理文档中…' : '上传并处理文档中…'
   try {
-    const { data, status } = await uploadDocument(
-      selectedFile.value,
-      updateProgress,
-      selectedRagDatabaseId.value,
-    )
-    uploadStatus.value =
-      status === 200
-        ? `内容重复，已返回已有文档：${data.filename}`
-        : `上传完成：${data.filename}，${data.chunk_count} 个 chunk`
-    selectedFile.value = null
+    if (selectedFiles.value.length === 1) {
+      const { data, status } = await uploadDocument(
+        selectedFiles.value[0],
+        updateProgress,
+        selectedRagDatabaseId.value,
+      )
+      uploadStatus.value =
+        status === 200
+          ? `内容重复，已返回已有文档：${data.filename}`
+          : `上传完成：${data.filename}，${data.chunk_count} 个 chunk`
+    } else {
+      const { data } = await uploadDocumentsBatch(
+        selectedFiles.value,
+        updateProgress,
+        selectedRagDatabaseId.value,
+      )
+      const chunkCount = data.reduce((total, item) => total + item.chunk_count, 0)
+      uploadStatus.value = `批量上传完成：${data.length} 个文件，${chunkCount} 个 chunk`
+    }
+    selectedFiles.value = []
     const input = document.querySelector('#file-input')
     if (input) input.value = ''
     await refreshDocuments()
@@ -200,7 +237,7 @@ async function showChunks(documentItem) {
 function chooseReplacement(documentItem) {
   const input = document.createElement('input')
   input.type = 'file'
-  input.accept = '.txt,.docx,.pdf'
+  input.accept = '.txt,.docx,.xls,.xlsx,.pdf'
   input.onchange = async () => {
     const file = input.files?.[0]
     if (!file) return
@@ -329,6 +366,13 @@ onMounted(async () => {
         </select>
         <input v-model="newDatabaseName" placeholder="新数据库名称" />
         <button :disabled="busy" @click="createDatabase">创建</button>
+        <button
+          class="danger"
+          :disabled="busy || !selectedRagDatabase || selectedRagDatabase.is_default"
+          @click="removeDatabase"
+        >
+          删除当前库
+        </button>
       </div>
     </section>
 
@@ -366,17 +410,26 @@ onMounted(async () => {
           <span class="step">01</span>
           <h2>导入文档</h2>
         </div>
-        <p>支持 TXT、DOCX、文本型 PDF；不支持 OCR。</p>
+        <p>支持 TXT、DOCX、XLS、XLSX、文本型 PDF；不支持 OCR。</p>
       </div>
       <div class="upload-row">
         <label class="file-picker">
           <input
             id="file-input"
             type="file"
-            accept=".txt,.docx,.pdf"
-            @change="selectedFile = $event.target.files[0]"
+            accept=".txt,.docx,.xls,.xlsx,.pdf"
+            multiple
+            @change="selectedFiles = Array.from($event.target.files || [])"
           />
-          <span>{{ selectedFile?.name || '选择文档' }}</span>
+          <span>
+            {{
+              selectedFiles.length
+                ? selectedFiles.length === 1
+                  ? selectedFiles[0].name
+                  : `已选择 ${selectedFiles.length} 个文件`
+                : '选择文档'
+            }}
+          </span>
         </label>
         <button class="primary" :disabled="busy" @click="submitUpload">
           {{ busy ? '处理中…' : '上传并建立索引' }}

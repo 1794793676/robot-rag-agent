@@ -1,5 +1,7 @@
 from docx import Document
+from openpyxl import Workbook
 import pytest
+import xlwt
 
 from app.rag.parsers import ParsedSection, parse_document
 
@@ -72,6 +74,62 @@ def test_docx_keeps_punctuated_chinese_numbered_steps_as_body_text(tmp_path):
     assert sections == [
         ParsedSection(text="一、关闭电源。"),
         ParsedSection(text="二、确认指示灯熄灭。"),
+    ]
+
+
+def test_xlsx_preserves_sheet_name_headers_and_rows(tmp_path):
+    path = tmp_path / "robot-params.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "参数表"
+    sheet.append(["部件", "参数", "数值"])
+    sheet.append(["电池", "额定电压", "48V"])
+    sheet.append(["电机", "最大转速", "3000rpm"])
+    empty_sheet = workbook.create_sheet("空表")
+    empty_sheet.append([None, None])
+    workbook.save(path)
+
+    sections = parse_document(path, "xlsx")
+
+    assert sections == [
+        ParsedSection(
+            text=(
+                "| 部件 | 参数 | 数值 |\n"
+                "| --- | --- | --- |\n"
+                "| 电池 | 额定电压 | 48V |\n"
+                "| 电机 | 最大转速 | 3000rpm |"
+            ),
+            heading="工作表 参数表 / 行 1-3",
+        )
+    ]
+
+
+def test_xls_preserves_sheet_name_headers_and_rows(tmp_path):
+    path = tmp_path / "legacy-params.xls"
+    workbook = xlwt.Workbook()
+    sheet = workbook.add_sheet("参数表")
+    rows = [
+        ["部件", "参数", "数值"],
+        ["电池", "额定电压", "48V"],
+        ["电机", "最大转速", "3000rpm"],
+    ]
+    for row_index, row in enumerate(rows):
+        for column_index, value in enumerate(row):
+            sheet.write(row_index, column_index, value)
+    workbook.save(path)
+
+    sections = parse_document(path, "xls")
+
+    assert sections == [
+        ParsedSection(
+            text=(
+                "| 部件 | 参数 | 数值 |\n"
+                "| --- | --- | --- |\n"
+                "| 电池 | 额定电压 | 48V |\n"
+                "| 电机 | 最大转速 | 3000rpm |"
+            ),
+            heading="工作表 参数表 / 行 1-3",
+        )
     ]
 
 

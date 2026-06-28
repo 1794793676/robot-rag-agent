@@ -21,7 +21,7 @@ from app.rag.parsers import parse_document
 from app.rag.vector_store import VectorRecord, VectorStore
 
 
-ALLOWED_EXTENSIONS = {"txt", "docx", "pdf"}
+ALLOWED_EXTENSIONS = {"txt", "docx", "xls", "xlsx", "pdf"}
 
 
 class DocumentService:
@@ -41,7 +41,7 @@ class DocumentService:
         filename = self._safe_filename(upload.filename or "")
         extension = Path(filename).suffix.lower().lstrip(".")
         if extension not in ALLOWED_EXTENSIONS:
-            raise ValueError("仅支持 txt、docx、pdf 文件")
+            raise ValueError("仅支持 txt、docx、xls、xlsx、pdf 文件")
         content = await upload.read()
         if not content:
             raise ValueError("上传文件为空")
@@ -91,7 +91,7 @@ class DocumentService:
             return existing, True
 
         doc_id = str(uuid.uuid4())
-        temp_path = self.settings.files_dir / f".{doc_id}.upload"
+        temp_path = self.settings.files_dir / f".{doc_id}.upload.{extension}"
         final_name = f"{doc_id}.{extension}"
         final_path = self.settings.files_dir / final_name
         temp_path.write_bytes(content)
@@ -150,7 +150,7 @@ class DocumentService:
         if conflict:
             raise FileExistsError("相同内容已作为其他文档存在")
 
-        temp_path = self.settings.files_dir / f".{doc_id}.replacement"
+        temp_path = self.settings.files_dir / f".{doc_id}.replacement.{extension}"
         new_name = f"{doc_id}.{extension}"
         final_path = self.settings.files_dir / new_name
         old_path = self.settings.files_dir / document.stored_filename
@@ -202,6 +202,25 @@ class DocumentService:
         session.delete(document)
         session.commit()
         path.unlink(missing_ok=True)
+        self._rebuild_index(session)
+
+    def delete_database(self, session: Session, rag_database: RagDatabase) -> None:
+        if rag_database.is_default:
+            raise ValueError("默认 RAG 数据库不能删除")
+
+        documents = session.scalars(
+            select(Document).where(Document.rag_database_id == rag_database.id)
+        ).all()
+        doc_ids = [document.id for document in documents]
+        paths = [self.settings.files_dir / document.stored_filename for document in documents]
+        if doc_ids:
+            session.execute(delete(Chunk).where(Chunk.document_id.in_(doc_ids)))
+            session.execute(delete(Document).where(Document.id.in_(doc_ids)))
+        session.delete(rag_database)
+        session.commit()
+
+        for path in paths:
+            path.unlink(missing_ok=True)
         self._rebuild_index(session)
 
     @staticmethod

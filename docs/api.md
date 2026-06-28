@@ -12,12 +12,13 @@ GET /health
 
 - `GET /api/documents?rag_database_id=...`
 - `POST /api/documents?rag_database_id=...`
+- `POST /api/documents/batch?rag_database_id=...`
 - `GET /api/documents/{doc_id}?rag_database_id=...`
 - `PUT /api/documents/{doc_id}?rag_database_id=...`
 - `DELETE /api/documents/{doc_id}?rag_database_id=...`
 - `GET /api/documents/{doc_id}/chunks?rag_database_id=...`
 
-上传仅支持 `txt`、`docx`、可复制文本 PDF。图片和扫描版 PDF 不进入 RAG。
+上传仅支持 `txt`、`docx`、`xls`、`xlsx`、可复制文本 PDF。图片和扫描版 PDF 不进入 RAG。批量上传接口使用 multipart 字段名 `files`，可重复传多个文件。
 
 省略 `rag_database_id` 时使用默认知识库。
 
@@ -27,6 +28,7 @@ GET /health
 - `POST /api/rag-databases`
 - `GET /api/rag-databases/{database_id}`
 - `PUT /api/rag-databases/{database_id}/prompt`
+- `DELETE /api/rag-databases/{database_id}`
 
 创建数据库：
 
@@ -44,6 +46,8 @@ GET /health
   "prompt": "只依据本数据库资料回答"
 }
 ```
+
+删除数据库只允许删除非默认数据库，会同步删除该数据库下的文档、chunks、原文件并刷新向量索引。默认数据库返回 400。
 
 ## RAG
 

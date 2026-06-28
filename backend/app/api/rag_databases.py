@@ -18,6 +18,8 @@ router = APIRouter(prefix="/api/rag-databases", tags=["rag-databases"])
 def _translate_error(exc: Exception) -> HTTPException:
     if isinstance(exc, LookupError):
         return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=str(exc))
     if isinstance(exc, IntegrityError):
         return HTTPException(status_code=409, detail="RAG 数据库名称已存在")
     return HTTPException(status_code=500, detail=f"RAG 数据库处理失败：{exc}")
@@ -66,6 +68,17 @@ def update_rag_database_prompt(
                 session, database_id, payload.prompt
             )
             return request.app.state.rag_database_service.to_dict(session, database)
+        except Exception as exc:
+            session.rollback()
+            raise _translate_error(exc) from exc
+
+
+@router.delete("/{database_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_rag_database(database_id: str, request: Request):
+    with SessionLocal() as session:
+        try:
+            database = request.app.state.rag_database_service.get(session, database_id)
+            request.app.state.document_service.delete_database(session, database)
         except Exception as exc:
             session.rollback()
             raise _translate_error(exc) from exc

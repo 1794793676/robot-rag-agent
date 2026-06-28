@@ -38,9 +38,10 @@ h1 { margin: 8px 0; font-family: Georgia, "Noto Serif SC", serif; font-size: cla
 .step { font: 700 12px monospace; color: #d25834; border-bottom: 2px solid #d25834; padding-bottom: 3px; }
 
 .upload-row, .question-row { display: flex; gap: 12px; align-items: stretch; }
-.database-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, .8fr) auto; gap: 12px; align-items: stretch; }
+.database-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, .8fr) auto auto; gap: 12px; align-items: stretch; }
 .database-row select, .database-row input { min-width: 0; border: 1px solid #aeb8af; background: white; padding: 12px; }
 .database-row button, .prompt-actions button { border: 1px solid #aeb8af; background: white; color: #285e48; padding: 10px 14px; font-weight: 700; }
+.database-row .danger { border-color: #b1432c; color: #b1432c; background: #fff8f6; }
 .prompt-editor { width: 100%; min-height: 116px; margin-top: 14px; resize: vertical; border: 1px solid #aeb8af; padding: 13px; background: white; line-height: 1.6; }
 .prompt-actions { display: flex; gap: 10px; margin-top: 12px; justify-content: flex-end; }
 .prompt-actions .primary { border-color: #1e5c43; background: #1e5c43; color: white; }
