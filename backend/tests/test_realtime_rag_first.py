@@ -483,3 +483,59 @@ def test_retired_pending_response_never_uses_next_turn_identity():
 
     asyncio.run(exercise())
     assert [item["turn_id"] for item in outbound] == ["turn-b"]
+
+
+def test_delayed_cancel_ack_for_active_a_does_not_clear_pending_b():
+    from app.agent.qwen_realtime_client import QwenRealtimeClient
+
+    first = TurnIdentity("sess", "conn", "turn-a", "db")
+    second = TurnIdentity("sess", "conn", "turn-b", "db")
+    qwen = QwenRealtimeClient(response_gate=lambda _: True)
+    qwen.websocket = QwenSocket()
+
+    async def exercise():
+        await qwen.create_grounded_response("A", first)
+        await qwen._handle_event(
+            {"type": "response.created", "response": {"id": "resp-a"}}
+        )
+        await qwen.retire_active_response()
+        await qwen.create_grounded_response("B", second)
+        await qwen._handle_event(
+            {"type": "response.cancelled", "response_id": "resp-a"}
+        )
+        assert qwen.pending_response_identity == second
+        await qwen._handle_event(
+            {"type": "response.created", "response": {"id": "resp-b"}}
+        )
+
+    asyncio.run(exercise())
+    assert qwen.response_identities["resp-b"] == second
+
+
+def test_unrelated_error_does_not_clear_pending_response_create():
+    from app.agent.qwen_realtime_client import QwenRealtimeClient
+
+    identity = TurnIdentity("sess", "conn", "turn-b", "db")
+    qwen = QwenRealtimeClient(response_gate=lambda _: True)
+    qwen.websocket = QwenSocket()
+
+    async def exercise():
+        await qwen.create_grounded_response("B", identity)
+        pending_event_id = qwen.pending_response_event_id
+        await qwen._handle_event(
+            {
+                "type": "error",
+                "error": {
+                    "event_id": "unrelated-request",
+                    "message": "unrelated",
+                },
+            }
+        )
+        assert qwen.pending_response_identity == identity
+        assert qwen.pending_response_event_id == pending_event_id
+        await qwen._handle_event(
+            {"type": "response.created", "response": {"id": "resp-b"}}
+        )
+
+    asyncio.run(exercise())
+    assert qwen.response_identities["resp-b"] == identity
