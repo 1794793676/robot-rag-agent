@@ -147,7 +147,9 @@ WebSocket：
 WS /api/agent/ws/{session_id}
 ```
 
-客户端消息：`user_text`、`audio_chunk`、`audio_state`、`interrupt`、`close`。
+客户端消息：`user_text`、`audio_chunk`、`commit_audio`、`audio_state`、`interrupt`、`close`。
+
+语音帧通过 `audio_chunk` 连续上传，用户停讲后发送 `commit_audio` 显式提交。Qwen 自动响应关闭；后端等待转写，完成当前数据库的 retrieval/rerank，再手动调用 `response.create`。
 
 服务端消息：`connected`、`pipeline_stage`、`retrieval_result`、`text_delta`、`audio_delta`、`tool_call`、`tool_result`、`clear_audio_buffer`、`response_cancelled`、`response_started`、`response_done`、`error`。
 

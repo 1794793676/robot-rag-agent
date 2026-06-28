@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -57,12 +58,48 @@ def test_rerank_settings_defaults(monkeypatch):
     assert settings.rerank_is_enabled is False
 
 
-def test_docs_name_physical_and_logical_rag_databases():
-    text = (PROJECT_ROOT / "docs/rag.md").read_text()
-    assert "storage/rag.db" in text
-    assert "逻辑 RAG 数据库" in text
-    assert "RERANK_THRESHOLD=0.50" in text
-    assert "SIMILARITY_THRESHOLD=0.35" in text
+def docs_section(path: str, heading: str) -> str:
+    text = (PROJECT_ROOT / path).read_text()
+    match = re.search(
+        rf"^## {re.escape(heading)}\s*$\n(?P<body>.*?)(?=^## |\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match, f"missing documentation section: {path}#{heading}"
+    return match.group("body")
+
+
+def test_rag_docs_name_physical_logical_storage_and_match_thresholds():
+    section = docs_section("docs/rag.md", "物理存储、rerank 与匹配")
+    assert "storage/rag.db" in section
+    assert "逻辑 RAG 数据库" in section
+    assert "RERANK_THRESHOLD=0.50" in section
+    assert "SIMILARITY_THRESHOLD=0.35" in section
+
+
+def test_agent_docs_define_cancellable_connection_identity():
+    section = docs_section("docs/agent.md", "后端 RAG-first")
+    for field in ("session_id", "connection_id", "turn_id", "rag_database_id"):
+        assert field in section
+    assert "cancelled" in section
+
+
+def test_api_docs_list_all_manual_audio_client_messages():
+    section = docs_section("docs/api.md", "Agent")
+    message_line = next(
+        line for line in section.splitlines() if line.startswith("客户端消息：")
+    )
+    for message_type in (
+        "user_text",
+        "audio_chunk",
+        "commit_audio",
+        "audio_state",
+        "interrupt",
+        "close",
+    ):
+        assert f"`{message_type}`" in message_line
+    assert "手动" in section
+    assert "response.create" in section
 
 
 def test_rag_databases_default_and_independent_prompts(client):
