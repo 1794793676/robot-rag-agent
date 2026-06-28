@@ -135,9 +135,12 @@ def rerank_results(case: dict[str, Any], fake: bool = False, candidate_k: int = 
         case["query"], [doc["text"] for doc in docs], len(docs))
     if outcome.degraded:
         raise RuntimeError(f"reranker failed: {outcome.error_code}")
-    return [{"doc_id": docs[item.index]["doc_id"],
-             "chunk_id": docs[item.index].get("chunk_id"), "score": item.score}
-            for item in outcome.items]
+    return [{
+        "doc_id": docs[item.index]["doc_id"],
+        "chunk_id": docs[item.index].get("chunk_id"),
+        "score": item.score,
+        "vector_score": candidates[item.index]["score"],
+    } for item in outcome.items]
 
 
 def calibrate_rerank_pairs(
@@ -147,25 +150,16 @@ def calibrate_rerank_pairs(
 ) -> dict[str, Any]:
     cases = list(cases)
     grid = []
-    vector_cache = {
-        case["case_id"]: vector_results(case) for case in cases
-    } if fake else {}
+    rerank_cache = {
+        case["case_id"]: rerank_results(case, fake, candidate_k, 0.0)
+        for case in cases
+    }
     for similarity_threshold in similarity_thresholds:
         for case in cases:
-            if fake:
-                candidates = [
-                    item for item in vector_cache[case["case_id"]]
-                    if item["score"] >= similarity_threshold
-                ][:candidate_k]
-                case["results"] = sorted(
-                    [dict(item, vector_score=item["score"],
-                          score=item.get("fake_rerank_score", item["score"]))
-                     for item in candidates],
-                    key=lambda item: (-item["score"], item["doc_id"]),
-                )
-            else:
-                case["results"] = rerank_results(
-                    case, False, candidate_k, similarity_threshold)
+            case["results"] = [
+                item for item in rerank_cache[case["case_id"]]
+                if item.get("vector_score", item["score"]) >= similarity_threshold
+            ]
         for rerank_threshold in rerank_thresholds:
             metrics = evaluate_cases(cases, rerank_threshold, k, False)
             grid.append({
@@ -187,6 +181,14 @@ def calibrate_rerank_pairs(
                          and item["rerank_threshold"] == DEFAULT_THRESHOLDS["rerank"]),
                         grid[0])
         status = "failed"
+    selected_results = {
+        case["case_id"]: [
+            item for item in rerank_cache[case["case_id"]]
+            if item.get("vector_score", item["score"])
+            >= selected["similarity_threshold"]
+        ]
+        for case in cases
+    }
     return {
         "status": status,
         "selected_similarity_threshold": selected["similarity_threshold"],
@@ -194,6 +196,7 @@ def calibrate_rerank_pairs(
         "selected_threshold": selected["rerank_threshold"],
         "selected_metrics": selected["metrics"], "grid": grid,
         "constraints": {"max_fhr": max_fhr, "max_frr": max_frr},
+        "_selected_results": selected_results,
     }
 
 
@@ -328,10 +331,9 @@ def main(argv: list[str] | None = None) -> int:
         calibration = calibrate_rerank_pairs(
             cases, VECTOR_GRID, RERANK_GRID, args.fake_reranker,
             args.candidate_k, args.max_fhr, args.max_frr, args.k)
+        selected_results = calibration.pop("_selected_results")
         for case in cases:
-            case["results"] = rerank_results(
-                case, args.fake_reranker, args.candidate_k,
-                calibration["selected_similarity_threshold"])
+            case["results"] = selected_results[case["case_id"]]
     aggregate = evaluate_cases(cases, calibration["selected_threshold"], args.k)
     comparison = None
     if vector_baseline is not None:

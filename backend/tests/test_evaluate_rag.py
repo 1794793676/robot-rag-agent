@@ -128,6 +128,24 @@ def test_reranker_preserves_two_chunks_from_same_document():
     ]
 
 
+def test_pair_calibration_reranks_each_live_case_once(monkeypatch):
+    cases = [
+        {"case_id": f"case-{i}", "relevant_doc_ids": [], "relevant_chunk_ids": [],
+         "tags": ["negative"], "documents": []}
+        for i in range(3)
+    ]
+    calls = []
+
+    def fake_live(case, fake=False, candidate_k=20, similarity_threshold=0):
+        calls.append(case["case_id"])
+        return [{"doc_id": "x", "chunk_id": case["case_id"],
+                 "score": .2, "vector_score": .4}]
+
+    monkeypatch.setattr("scripts.evaluate_rag.rerank_results", fake_live)
+    calibrate_rerank_pairs(cases, [.25, .30], [.3, .35], fake=False)
+    assert calls == ["case-0", "case-1", "case-2"]
+
+
 def test_vector_scoring_is_scoped_to_case_database():
     case = {
         "query": "secret payroll policy",
