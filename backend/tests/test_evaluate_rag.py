@@ -8,6 +8,7 @@ import pytest
 from scripts.evaluate_rag import (
     RERANK_GRID,
     VECTOR_GRID,
+    calibrate_rerank_pairs,
     calibrate,
     evaluate_cases,
     load_fixture,
@@ -87,7 +88,27 @@ def test_mode_specific_grids_and_fake_reranker(monkeypatch):
     assert RERANK_GRID == pytest.approx([.30, .35, .40, .45, .50, .55, .60, .65, .70, .75, .80])
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     case = load_fixture(FIXTURE)[0]
-    assert rerank_results(case, fake=True) == vector_results(case)
+    assert rerank_results(case, fake=True) == rerank_results(case, fake=True)
+
+
+def test_fake_reranker_changes_order_and_pair_calibration():
+    case = {
+        "case_id": "promotion", "tags": ["hard"], "rag_database_id": "primary",
+        "query": "reset device", "relevant_doc_ids": ["relevant"],
+        "relevant_chunk_ids": ["c-rel"],
+        "documents": [
+            {"doc_id": "decoy", "chunk_id": "c-decoy", "database_id": "primary",
+             "text": "reset device", "fake_rerank_score": .1},
+            {"doc_id": "relevant", "chunk_id": "c-rel", "database_id": "primary",
+             "text": "factory restoration", "fake_rerank_score": .95},
+        ],
+    }
+    reranked = rerank_results(case, fake=True, similarity_threshold=0)
+    assert reranked[0]["doc_id"] == "relevant"
+    result = calibrate_rerank_pairs([case], [.0], [.5], fake=True, k=1)
+    assert result["status"] == "passed"
+    assert result["selected_similarity_threshold"] == 0
+    assert result["selected_rerank_threshold"] == .5
 
 
 def test_vector_scoring_is_scoped_to_case_database():

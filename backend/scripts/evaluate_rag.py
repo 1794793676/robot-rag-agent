@@ -50,6 +50,27 @@ def load_fixture(path: str | Path) -> list[dict[str, Any]]:
                 relevant_chunks = [chunk_id] if kind == "positive" else []
                 if kind == "positive":
                     text = f'{sources.get(tag, group["relevant_template"])} Device code {i}.'
+                documents = [{"doc_id": doc_id, "chunk_id": chunk_id,
+                              "database_id": database_id, "text": text,
+                              "fake_rerank_score": .95 if kind == "positive" else .1}]
+                if kind == "positive" and i == 0:
+                    documents[0]["text"] = "Factory restoration procedure."
+                    for decoy in range(6):
+                        documents.append({
+                            "doc_id": f"decoy-{decoy}", "chunk_id": f"decoy-chunk-{decoy}",
+                            "database_id": "primary",
+                            "text": f"How to reset device code {i}, overview {decoy}.",
+                            "fake_rerank_score": .05 + decoy / 100,
+                        })
+                if kind == "positive" and tag == "multichunk":
+                    second_chunk = f"{chunk_id}-part2"
+                    relevant_chunks.append(second_chunk)
+                    documents.append({
+                        "doc_id": doc_id, "chunk_id": second_chunk,
+                        "database_id": "primary",
+                        "text": "Reconnect power while continuing to hold reset.",
+                        "fake_rerank_score": .9,
+                    })
                 cases.append({
                     "case_id": f"{kind}-{i}",
                     "category": kind,
@@ -60,8 +81,7 @@ def load_fixture(path: str | Path) -> list[dict[str, Any]]:
                     "relevant_chunk_ids": relevant_chunks,
                     "tags": [tag],
                     "expected_facts": [f"device code {i}"] if kind == "positive" else [],
-                    "documents": [{"doc_id": doc_id, "chunk_id": chunk_id,
-                                   "database_id": database_id, "text": text}],
+                    "documents": documents,
                 })
             offset += group["count"]
     for case in cases:
@@ -82,16 +102,24 @@ def vector_results(case: dict[str, Any]) -> list[dict[str, Any]]:
     results = []
     for doc in documents:
         score = float(np.dot(query, np.asarray(embedder._fake_embedding(doc["text"]))))
-        results.append({"doc_id": doc["doc_id"], "chunk_id": doc.get("chunk_id"),
-                        "score": max(0.0, min(1.0, score))})
+        result = {"doc_id": doc["doc_id"], "chunk_id": doc.get("chunk_id"),
+                  "score": max(0.0, min(1.0, score))}
+        if "fake_rerank_score" in doc:
+            result["fake_rerank_score"] = doc["fake_rerank_score"]
+        results.append(result)
     return sorted(results, key=lambda item: (-item["score"], item["doc_id"]))
 
 
-def rerank_results(case: dict[str, Any], fake: bool = False, candidate_k: int = 20) -> list[dict[str, Any]]:
-    candidates = vector_results(case)[:candidate_k]
+def rerank_results(case: dict[str, Any], fake: bool = False, candidate_k: int = 20,
+                   similarity_threshold: float = 0.0) -> list[dict[str, Any]]:
+    candidates = [item for item in vector_results(case)
+                  if item["score"] >= similarity_threshold][:candidate_k]
     documents_by_id = {doc["doc_id"]: doc for doc in case["documents"]}
     if fake:
-        return sorted(candidates, key=lambda item: (-item["score"], item["doc_id"]))
+        reranked = [dict(item, vector_score=item["score"],
+                         score=item.get("fake_rerank_score", item["score"]))
+                    for item in candidates]
+        return sorted(reranked, key=lambda item: (-item["score"], item["doc_id"]))
     if not os.environ.get("DASHSCOPE_API_KEY"):
         raise RuntimeError("live rerank mode requires DASHSCOPE_API_KEY (use --fake-reranker offline)")
     from app.core.config import Settings
@@ -105,6 +133,63 @@ def rerank_results(case: dict[str, Any], fake: bool = False, candidate_k: int = 
     return [{"doc_id": docs[item.index]["doc_id"],
              "chunk_id": docs[item.index].get("chunk_id"), "score": item.score}
             for item in outcome.items]
+
+
+def calibrate_rerank_pairs(
+    cases: Iterable[dict[str, Any]], similarity_thresholds: Iterable[float],
+    rerank_thresholds: Iterable[float], fake: bool = False, candidate_k: int = 20,
+    max_fhr: float = .05, max_frr: float = .15, k: int = 5,
+) -> dict[str, Any]:
+    cases = list(cases)
+    grid = []
+    vector_cache = {
+        case["case_id"]: vector_results(case) for case in cases
+    } if fake else {}
+    for similarity_threshold in similarity_thresholds:
+        for case in cases:
+            if fake:
+                candidates = [
+                    item for item in vector_cache[case["case_id"]]
+                    if item["score"] >= similarity_threshold
+                ][:candidate_k]
+                case["results"] = sorted(
+                    [dict(item, vector_score=item["score"],
+                          score=item.get("fake_rerank_score", item["score"]))
+                     for item in candidates],
+                    key=lambda item: (-item["score"], item["doc_id"]),
+                )
+            else:
+                case["results"] = rerank_results(
+                    case, False, candidate_k, similarity_threshold)
+        for rerank_threshold in rerank_thresholds:
+            metrics = evaluate_cases(cases, rerank_threshold, k, False)
+            grid.append({
+                "similarity_threshold": similarity_threshold,
+                "rerank_threshold": rerank_threshold, "metrics": metrics,
+            })
+    feasible = [item for item in grid
+                if item["metrics"]["false_hit_rate"] <= max_fhr
+                and item["metrics"]["false_rejection_rate"] <= max_frr]
+    if feasible:
+        selected = max(feasible, key=lambda item: (
+            item["metrics"]["hit_rate"], item["metrics"]["mrr"],
+            -item["metrics"]["false_hit_rate"], -item["similarity_threshold"],
+            -item["rerank_threshold"]))
+        status = "passed"
+    else:
+        selected = next((item for item in grid
+                         if item["similarity_threshold"] == DEFAULT_THRESHOLDS["vector"]
+                         and item["rerank_threshold"] == DEFAULT_THRESHOLDS["rerank"]),
+                        grid[0])
+        status = "failed"
+    return {
+        "status": status,
+        "selected_similarity_threshold": selected["similarity_threshold"],
+        "selected_rerank_threshold": selected["rerank_threshold"],
+        "selected_threshold": selected["rerank_threshold"],
+        "selected_metrics": selected["metrics"], "grid": grid,
+        "constraints": {"max_fhr": max_fhr, "max_frr": max_frr},
+    }
 
 
 def evaluate_cases(cases: Iterable[dict[str, Any]], threshold: float, k: int = 5,
@@ -185,7 +270,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     return f"""# RAG Evaluation Report
 
 - Mode: {report["mode"]}
-- Model/config: {report["model_id"]} / {report["config_id"]}
+- Model/config: {report["model_id"]} / {report.get("config", report.get("config_id"))}
 - Cases: {report["case_count"]}
 - Calibration: {c["status"]}; threshold {c["selected_threshold"]:.2f}
 - TP / FP / FN / TN: {counts["tp"]} / {counts["fp"]} / {counts["fn"]} / {counts["tn"]}
@@ -195,7 +280,17 @@ def render_markdown(report: dict[str, Any]) -> str:
 - Precision@{m["k"]}: {m["precision_at_k"]:.4f}
 - Recall@{m["k"]}: {m["recall_at_k"]:.4f}
 - MRR: {m["mrr"]:.4f}
-"""
+""" + "\n## Per-category\n\n| Category | Hit | FHR | FRR | MRR |\n|---|---:|---:|---:|---:|\n" + "".join(
+        f'| {tag} | {value["hit_rate"]:.3f} | {value["false_hit_rate"]:.3f} | '
+        f'{value["false_rejection_rate"]:.3f} | {value["mrr"]:.3f} |\n'
+        for tag, value in report.get("per_category", m.get("per_category", {})).items()
+    ) + "\n## Per-case\n\n| Case | Decision | Ranked candidates |\n|---|---|---|\n" + "".join(
+        f'| {case["case_id"]} | {case["decision"]} | ' +
+        ", ".join(f'{item["rank"]}:{item["doc_id"]}={item["score"]:.3f}'
+                  for item in case["ranked_candidates"]) + " |\n"
+        for case in report.get("per_case", m.get("per_case", []))
+    ) + ("\n## Comparison deltas\n\n" + json.dumps(report.get("comparison_delta"))
+         if report.get("comparison_delta") is not None else "")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -207,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-frr", type=float, default=.15)
     parser.add_argument("--k", type=int, default=5)
     parser.add_argument("--fake-reranker", action="store_true")
+    parser.add_argument("--candidate-k", type=int, default=20)
     args = parser.parse_args(argv)
     cases = load_fixture(args.fixtures)
     vector_baseline = None
@@ -218,12 +314,19 @@ def main(argv: list[str] | None = None) -> int:
             DEFAULT_THRESHOLDS["vector"])
         vector_baseline = evaluate_cases(
             cases, vector_calibration["selected_threshold"], args.k)
-    for case in cases:
-        case["results"] = (vector_results(case) if args.mode == "vector"
-                           else rerank_results(case, args.fake_reranker))
-    default = DEFAULT_THRESHOLDS[args.mode]
-    calibration = calibrate(cases, VECTOR_GRID if args.mode == "vector" else RERANK_GRID,
-                            args.max_fhr, args.max_frr, args.k, default)
+    if args.mode == "vector":
+        for case in cases:
+            case["results"] = vector_results(case)
+        calibration = calibrate(cases, VECTOR_GRID, args.max_fhr, args.max_frr,
+                                args.k, DEFAULT_THRESHOLDS["vector"])
+    else:
+        calibration = calibrate_rerank_pairs(
+            cases, VECTOR_GRID, RERANK_GRID, args.fake_reranker,
+            args.candidate_k, args.max_fhr, args.max_frr, args.k)
+        for case in cases:
+            case["results"] = rerank_results(
+                case, args.fake_reranker, args.candidate_k,
+                calibration["selected_similarity_threshold"])
     aggregate = evaluate_cases(cases, calibration["selected_threshold"], args.k)
     comparison = None
     if vector_baseline is not None:
@@ -235,8 +338,12 @@ def main(argv: list[str] | None = None) -> int:
     report = {
         "dataset_version": "1.0", "mode": args.mode, "case_count": len(cases),
         "model_id": "deterministic-embedder" if args.mode == "vector"
-        else ("fake-reranker" if args.fake_reranker else "dashscope-reranker"),
-        "config_id": f"top_k={args.k}", "calibration": calibration,
+        else ("fake-reranker" if args.fake_reranker else "qwen3-rerank"),
+        "config": {"candidate_k": args.candidate_k, "top_k": args.k,
+                   "defaults": DEFAULT_THRESHOLDS, "similarity_grid": VECTOR_GRID,
+                   "rerank_grid": RERANK_GRID},
+        "config_id": f"candidate_k={args.candidate_k};top_k={args.k}",
+        "calibration": calibration,
         "aggregate": aggregate, "per_case": aggregate["per_case"],
         "per_category": aggregate["per_category"], "comparison_delta": comparison,
     }
