@@ -1,0 +1,24 @@
+{
+  "description": "Deterministic offline RAG evaluation corpus",
+  "groups": [
+    {
+      "kind": "positive",
+      "count": 60,
+      "query_template": "How do I reset device code {i}?",
+      "relevant_template": "To reset device code {i}, hold the reset button for ten seconds.",
+      "distractor_template": "Device code {i} warranty and recycling information."
+    },
+    {
+      "kind": "negative",
+      "count": 40,
+      "query_template": "What is the cafeteria menu item {i}?",
+      "distractor_template": "Device maintenance bulletin number {i}."
+    },
+    {
+      "kind": "cross_database",
+      "count": 20,
+      "query_template": "What is the payroll policy code {i}?",
+      "distractor_template": "Payroll policy code {i} belongs to another company's database."
+    }
+  ]
+}
