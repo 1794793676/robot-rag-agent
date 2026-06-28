@@ -18,6 +18,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "")
     monkeypatch.setenv("EMBEDDING_DIM", "64")
     monkeypatch.setenv("SIMILARITY_THRESHOLD", "0.15")
+    monkeypatch.setenv("RERANK_ENABLED", "false")
 
     for name in list(sys.modules):
         if name == "app" or name.startswith("app."):
@@ -26,4 +27,3 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     main = importlib.import_module("app.main")
     with TestClient(main.app) as test_client:
         yield test_client
-

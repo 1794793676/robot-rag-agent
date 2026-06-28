@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from html import escape
-
 import httpx
 
 from app.core.config import Settings
-
-EVIDENCE_CHAR_LIMIT = 12_000
-EVIDENCE_METADATA_CHAR_LIMIT = 500
+from app.rag.evidence import (
+    EVIDENCE_CHAR_LIMIT,
+    EVIDENCE_METADATA_CHAR_LIMIT,
+    serialize_evidence,
+)
 
 
 class Answerer:
@@ -51,43 +51,7 @@ class DashScopeAnswerer(Answerer):
         self.transport = transport
 
     def _build_evidence(self, results: list[dict]) -> str:
-        blocks: list[str] = []
-        used = 0
-        for index, result in enumerate(results, start=1):
-            raw_text = str(result.get("text") or "")
-            if not raw_text:
-                continue
-
-            filename = escape(
-                str(result.get("filename") or "未知"), quote=True
-            )[:EVIDENCE_METADATA_CHAR_LIMIT]
-            page = escape(
-                str(result.get("page") if result.get("page") is not None else "未知"),
-                quote=True,
-            )[:EVIDENCE_METADATA_CHAR_LIMIT]
-            text = escape(raw_text, quote=True)
-            prefix = "\n".join(
-                [
-                    f'<evidence index="{index}">',
-                    f"<filename>{filename}</filename>",
-                    f"<page>{page}</page>",
-                    "<text>",
-                ]
-            )
-            suffix = "</text>\n</evidence>"
-            separator = "\n\n" if blocks else ""
-            remaining = EVIDENCE_CHAR_LIMIT - used - len(separator)
-            available_text = remaining - len(prefix) - len(suffix)
-            if available_text <= 0:
-                break
-
-            block = f"{prefix}{text[:available_text]}{suffix}"
-            blocks.append(f"{separator}{block}")
-            used += len(separator) + len(block)
-            if len(text) > available_text:
-                break
-
-        return "".join(blocks) or "无"
+        return serialize_evidence(results)
 
     def answer(self, question: str, results: list[dict], prompt: str = "") -> str:
         evidence = self._build_evidence(results)
@@ -112,7 +76,7 @@ class DashScopeAnswerer(Answerer):
                 "role": "user",
                 "content": (
                     f"问题：{question}\n\n"
-                    f"证据：\n<evidence_set>\n{evidence}\n</evidence_set>"
+                    f"证据：\n{evidence}"
                 ),
             },
         ]

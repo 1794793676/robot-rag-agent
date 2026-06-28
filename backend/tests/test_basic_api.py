@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import re
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 def upload_txt(client, name: str, text: str):
     return client.post(
@@ -19,7 +25,81 @@ def create_rag_database(client, name: str, prompt: str = ""):
 def test_health(client):
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["similarity_threshold"] == 0.15
+    assert payload["rerank_threshold"] == 0.50
+    assert payload["rerank_model"] == "qwen3-rerank"
+    assert payload["rerank_enabled"] is False
+    assert payload["rerank_mode"] == "disabled"
+
+
+def test_disabled_reranker_is_constructed_when_setting_is_disabled(client):
+    from app.rag.reranker import DisabledReranker
+
+    assert isinstance(client.app.state.reranker, DisabledReranker)
+
+
+def test_rerank_settings_defaults(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    settings = Settings(_env_file=None)
+
+    assert settings.rerank_enabled is True
+    assert settings.rerank_model == "qwen3-rerank"
+    assert (
+        settings.rerank_base_url
+        == "https://dashscope-intl.aliyuncs.com/compatible-api/v1/reranks"
+    )
+    assert settings.rerank_candidate_k == 30
+    assert settings.rerank_threshold == 0.50
+    assert settings.rerank_timeout_seconds == 2.0
+    assert settings.rerank_is_enabled is False
+
+
+def docs_section(path: str, heading: str) -> str:
+    text = (PROJECT_ROOT / path).read_text()
+    match = re.search(
+        rf"^## {re.escape(heading)}\s*$\n(?P<body>.*?)(?=^## |\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match, f"missing documentation section: {path}#{heading}"
+    return match.group("body")
+
+
+def test_rag_docs_name_physical_logical_storage_and_match_thresholds():
+    section = docs_section("docs/rag.md", "物理存储、rerank 与匹配")
+    assert "storage/rag.db" in section
+    assert "逻辑 RAG 数据库" in section
+    assert "RERANK_THRESHOLD=0.50" in section
+    assert "SIMILARITY_THRESHOLD=0.35" in section
+
+
+def test_agent_docs_define_cancellable_connection_identity():
+    section = docs_section("docs/agent.md", "后端 RAG-first")
+    for field in ("session_id", "connection_id", "turn_id", "rag_database_id"):
+        assert field in section
+    assert "cancelled" in section
+
+
+def test_api_docs_list_all_manual_audio_client_messages():
+    section = docs_section("docs/api.md", "Agent")
+    message_line = next(
+        line for line in section.splitlines() if line.startswith("客户端消息：")
+    )
+    for message_type in (
+        "user_text",
+        "audio_chunk",
+        "commit_audio",
+        "audio_state",
+        "interrupt",
+        "close",
+    ):
+        assert f"`{message_type}`" in message_line
+    assert "手动" in section
+    assert "response.create" in section
 
 
 def test_rag_databases_default_and_independent_prompts(client):
@@ -145,13 +225,22 @@ def test_search_ask_replace_and_delete(client):
 
     search = client.post("/api/qa/search", json={"query": "机器人电池电压是多少", "top_k": 3})
     assert search.status_code == 200
-    assert search.json()["results"][0]["doc_id"] == doc_id
-    assert "四十八伏" in search.json()["results"][0]["text"]
+    search_payload = search.json()
+    assert search_payload["results"][0]["doc_id"] == doc_id
+    assert "四十八伏" in search_payload["results"][0]["text"]
+    assert search_payload["decision_score_type"] == "vector"
+    assert search_payload["decision_threshold"] == 0.15
+    assert search_payload["rerank_applied"] is False
+    assert search_payload["rerank_degraded"] is False
+    assert search_payload["results"][0]["vector_score"] is not None
+    assert search_payload["results"][0]["rerank_score"] is None
 
     answer = client.post("/api/qa/ask", json={"question": "维修电池要先做什么", "top_k": 3})
     assert answer.status_code == 200
     assert answer.json()["sources"]
     assert answer.json()["confidence"] > 0
+    assert answer.json()["matched"] is True
+    assert answer.json()["decision_score"] == answer.json()["confidence"]
 
     replacement_text = "维修机器人电池前必须打开检修模式。新电池额定电压为二十四伏。"
     replaced = client.put(

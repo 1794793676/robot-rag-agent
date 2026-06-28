@@ -35,4 +35,8 @@ def webrtc_ice(payload: IceCandidateRequest):
 
 @router.websocket("/agent/ws/{session_id}")
 async def agent_websocket(websocket: WebSocket, session_id: str):
-    await RealtimeAgentSession(session_id, websocket).run()
+    await RealtimeAgentSession(
+        session_id,
+        websocket,
+        orchestrator=websocket.app.state.rag_first_turn_orchestrator,
+    ).run()

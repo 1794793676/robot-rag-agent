@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import RealtimeChat from './pages/RealtimeChat.vue'
 import {
   askQuestion,
@@ -36,6 +36,19 @@ const topK = ref(5)
 const qaLoading = ref(false)
 const qaResult = ref(null)
 const qaError = ref('')
+const agentStatus = ref('idle')
+const selectedRagDatabase = computed(() =>
+  ragDatabases.value.find(
+    (database) => database.rag_database_id === selectedRagDatabaseId.value,
+  ) || null,
+)
+const agentStatusLabel = computed(() => {
+  if (agentStatus.value === 'switching_database') return 'Agent 正在切换数据库'
+  if (agentStatus.value === 'connecting') return 'Agent 正在连接'
+  if (agentStatus.value === 'error') return 'Agent 重连失败，可重试'
+  if (agentStatus.value === 'idle') return 'Agent 未连接'
+  return 'Agent 已连接'
+})
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString() : '-'
@@ -282,19 +295,30 @@ onMounted(async () => {
       <button data-testid="agent-tab" :class="{ active: activePage === 'agent' }" @click="activePage = 'agent'">实时语音 Agent</button>
     </nav>
 
-    <RealtimeChat v-if="activePage === 'agent'" :rag-database-id="selectedRagDatabaseId" />
-
-    <template v-else>
-    <section class="panel database-panel">
-      <div class="section-heading">
-        <div>
-          <span class="step">00</span>
-          <h2>RAG 数据库</h2>
-        </div>
-        <button class="text-button" @click="refreshRagDatabases">刷新数据库</button>
+    <section
+      class="global-database-selector"
+      aria-label="当前 RAG 数据库"
+      data-testid="global-rag-database-selector"
+    >
+      <div class="database-current">
+        <span class="eyebrow">CURRENT RAG DATABASE</span>
+        <strong>{{ selectedRagDatabase?.name || '未选择数据库' }}</strong>
+        <span v-if="selectedRagDatabase?.is_default" class="tag">默认</span>
+        <small>
+          {{ selectedRagDatabase?.document_count ?? 0 }} 个文档 ·
+          {{ selectedRagDatabase?.chunk_count ?? 0 }} 个 Chunks ·
+          {{ selectedRagDatabaseId ? '可用' : '不可用' }}
+        </small>
+        <small class="agent-selector-status" data-testid="agent-selector-status">
+          {{ agentStatusLabel }}
+        </small>
       </div>
       <div class="database-row">
-        <select v-model="selectedRagDatabaseId" @change="switchRagDatabase">
+        <select
+          v-model="selectedRagDatabaseId"
+          :disabled="agentStatus === 'switching_database'"
+          @change="switchRagDatabase"
+        >
           <option
             v-for="database in ragDatabases"
             :key="database.rag_database_id"
@@ -305,6 +329,24 @@ onMounted(async () => {
         </select>
         <input v-model="newDatabaseName" placeholder="新数据库名称" />
         <button :disabled="busy" @click="createDatabase">创建</button>
+      </div>
+    </section>
+
+    <RealtimeChat
+      v-if="activePage === 'agent'"
+      :rag-database-id="selectedRagDatabaseId"
+      :rag-database="selectedRagDatabase"
+      @status-change="agentStatus = $event"
+    />
+
+    <template v-else>
+    <section class="panel database-panel">
+      <div class="section-heading">
+        <div>
+          <span class="step">00</span>
+          <h2>数据库 Prompt</h2>
+        </div>
+        <button class="text-button" @click="refreshRagDatabases">刷新数据库</button>
       </div>
       <textarea
         v-model="promptDraft"

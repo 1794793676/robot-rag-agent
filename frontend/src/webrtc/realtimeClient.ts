@@ -1,5 +1,4 @@
 import {
-  hasConnectionIdentity,
   matchesActiveConnection,
   type ConnectionIdentity,
 } from './connectionIdentity'
@@ -20,6 +19,22 @@ export class RealtimeClient {
 
   onMessage(handler: MessageHandler): void {
     this.handlers.push(handler)
+  }
+
+  async open(databaseId: string): Promise<any> {
+    const session = await this.createSession({ rag_database_id: databaseId })
+    if (
+      session.rag_database_id !== databaseId
+      || !session.session_id
+      || !session.connection_id
+      || this.identity?.sessionId !== session.session_id
+      || this.identity?.connectionId !== session.connection_id
+      || this.identity?.ragDatabaseId !== databaseId
+    ) {
+      throw new Error('Agent 会话身份与当前 RAG 数据库不一致')
+    }
+    await this.connect()
+    return session
   }
 
   async createSession(payload: Record<string, any> = {}): Promise<any> {
@@ -56,7 +71,7 @@ export class RealtimeClient {
         if (this.ws !== ws || this.identity !== identity) return
         try {
           const message = JSON.parse(event.data)
-          if (hasConnectionIdentity(message) && !matchesActiveConnection(message, identity)) return
+          if (!matchesActiveConnection(message, identity)) return
           this.handlers.forEach((handler) => handler(message))
         } catch {
           this.handlers.forEach((handler) => handler({ type: 'error', message: '收到无效消息' }))
@@ -111,6 +126,10 @@ export class RealtimeClient {
 
   interrupt(responseId: string | null, reason = 'user_speech'): void {
     this.send({ type: 'interrupt', response_id: responseId, reason })
+  }
+
+  commitAudio(): void {
+    this.send({ type: 'commit_audio' })
   }
 
   async close(): Promise<void> {

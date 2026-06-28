@@ -17,6 +17,7 @@ def create_session(rag_database_id: str | None = None) -> dict:
     peer_manager.upsert(state.session_id)
     return {
         "session_id": state.session_id,
+        "connection_id": state.connection_id,
         "rag_database_id": state.rag_database_id or "",
         "mode": "websocket_fallback",
         "websocket_url": f"/api/agent/ws/{state.session_id}",

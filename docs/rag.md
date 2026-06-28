@@ -62,4 +62,20 @@ POST /api/qa/ask
 POST /api/qa/search
 ```
 
-Agent 不重写 RAG，而是在 `backend/app/agent/tools.py` 中统一适配为 Function Calling 工具 `rag_search`。Agent session 会绑定一个 `rag_database_id`，工具调用复用后端共享 RAG 查询逻辑，避免测试页和 Agent 的 prompt 注入不一致。
+Agent session 会绑定一个 `rag_database_id`，工具调用复用后端共享 RAG 查询逻辑，避免测试页和 Agent 的 prompt 注入不一致。实时 Agent 的正式链路由后端在生成前强制检索，模型不能绕过或覆盖该数据库绑定。
+
+## 物理存储、rerank 与匹配
+
+`storage/rag.db` 是唯一的物理 SQLite 持久化文件。选择器展示的是其中按 `rag_database_id` 隔离的**逻辑 RAG 数据库**，不是多个 SQLite 文件。
+
+向量检索只召回当前数据库的候选，默认 `RERANK_CANDIDATE_K=30`。配置 `DASHSCOPE_API_KEY` 且启用时调用同源的 `qwen3-rerank`，默认 `RERANK_TIMEOUT_SECONDS=2.0`。成功时用 `RERANK_THRESHOLD=0.50`；未启用、超时或错误时保留向量顺序并用 `SIMILARITY_THRESHOLD=0.35`。响应通过 `decision_score(_type)`、`decision_threshold`、`rerank_applied`、`rerank_degraded`、`vector_score`、`rerank_score` 暴露实际判定。
+
+## 测试集评估
+
+```bash
+cd backend
+.venv/bin/python scripts/evaluate_rag.py --fixtures tests/fixtures/rag_eval/cases.json --mode vector --output /tmp/rag-eval-vector
+.venv/bin/python scripts/evaluate_rag.py --fixtures tests/fixtures/rag_eval/cases.json --mode rerank --fake-reranker --candidate-k 30 --output /tmp/rag-eval-rerank
+```
+
+真实 API 评估移除 `--fake-reranker` 并配置 `DASHSCOPE_API_KEY`。报告包含命中率 `TP/(TP+FN)`、误命中率 `FP/(FP+TN)`、误拒率 `FN/(TP+FN)`、Precision@K、Recall@K 和 MRR；默认约束是误命中率不高于 5%、误拒率不高于 15%。

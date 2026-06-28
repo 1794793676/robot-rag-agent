@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from app.api import agent_api, chunks, documents, qa, rag_databases, webrtc_api
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.db.database import SessionLocal, init_db
 from app.db.models import Chunk
@@ -18,14 +18,22 @@ from app.agent.session_state import session_store
 from app.agent.tools import configure_rag_query_service
 from app.rag.answerer import DashScopeAnswerer, ExtractiveAnswerer
 from app.rag.embedder import Embedder
+from app.rag.reranker import DashScopeReranker, DisabledReranker, Reranker
 from app.rag.retriever import Retriever
 from app.rag.vector_store import VectorRecord, VectorStore
 from app.services.documents import DocumentService
 from app.services.rag_databases import RagDatabaseService
+from app.services.rag_first_turn import RagFirstTurnOrchestrator
 from app.services.rag_query import RagQueryService
 
 configure_logging()
 settings = get_settings()
+
+
+def _build_reranker(reranker_settings: Settings) -> Reranker:
+    if reranker_settings.rerank_is_enabled:
+        return DashScopeReranker(reranker_settings)
+    return DisabledReranker()
 
 
 @asynccontextmanager
@@ -54,6 +62,7 @@ async def lifespan(app: FastAPI):
     app.state.embedder = embedder
     app.state.vector_store = vector_store
     app.state.retriever = Retriever(embedder, vector_store)
+    app.state.reranker = _build_reranker(settings)
     app.state.answerer = (
         DashScopeAnswerer(settings)
         if settings.dashscope_api_key
@@ -64,7 +73,15 @@ async def lifespan(app: FastAPI):
         rag_database_service,
         app.state.retriever,
         app.state.answerer,
-        settings.similarity_threshold,
+        app.state.reranker,
+        similarity_threshold=settings.similarity_threshold,
+        rerank_threshold=settings.rerank_threshold,
+        candidate_k=settings.rerank_candidate_k,
+    )
+    app.state.rag_first_turn_orchestrator = RagFirstTurnOrchestrator(
+        session_store,
+        app.state.rag_query_service,
+        SessionLocal,
     )
     configure_rag_query_service(app.state.rag_query_service)
     yield
@@ -94,4 +111,9 @@ def health():
         "vector_backend": getattr(app.state, "vector_store", None).backend_name
         if hasattr(app.state, "vector_store")
         else "initializing",
+        "similarity_threshold": settings.similarity_threshold,
+        "rerank_enabled": settings.rerank_is_enabled,
+        "rerank_model": settings.rerank_model,
+        "rerank_mode": "dashscope" if settings.rerank_is_enabled else "disabled",
+        "rerank_threshold": settings.rerank_threshold,
     }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -12,6 +13,14 @@ def create_rag_database(client, name: str, prompt: str = ""):
     response = client.post("/api/rag-databases", json={"name": name, "prompt": prompt})
     assert response.status_code == 201
     return response.json()["rag_database_id"]
+
+
+def bind_qwen_test_response(qwen, response_id: str = "resp_1"):
+    from app.services.rag_first_turn import TurnIdentity
+
+    identity = TurnIdentity("sess_1", "conn_1", "turn_1", "db_1")
+    qwen.response_identities[response_id] = identity
+    return identity
 
 
 def test_session_manager_creates_updates_and_expires_sessions(monkeypatch):
@@ -33,6 +42,148 @@ def test_session_manager_creates_updates_and_expires_sessions(monkeypatch):
     now[0] = 1016.0
     store.cleanup_expired()
     assert store.get(state.session_id) is None
+
+
+def test_session_lifecycle_tracks_connection_and_current_turn():
+    from app.agent.session_state import InMemorySessionStore
+
+    store = InMemorySessionStore()
+    state = store.create("sess_1", "database_a")
+
+    assert state.connection_id.startswith("conn_")
+    assert state.status == "active"
+    turn = store.begin_turn("sess_1")
+    assert turn is not None
+    assert turn.turn_id.startswith("turn_")
+    assert store.is_current("sess_1", state.connection_id, turn.turn_id) is True
+
+    next_turn = store.begin_turn("sess_1")
+    assert next_turn is not None
+    assert turn.cancelled is True
+    assert store.is_current("sess_1", state.connection_id, turn.turn_id) is False
+    assert store.is_current("sess_1", "conn_stale", next_turn.turn_id) is False
+    assert store.is_current("sess_stale", state.connection_id, next_turn.turn_id) is False
+    assert (
+        store.is_current_and_bound(
+            "sess_1", state.connection_id, next_turn.turn_id, "database_a"
+        )
+        is True
+    )
+    assert (
+        store.is_current_and_bound(
+            "sess_1", state.connection_id, next_turn.turn_id, "database_b"
+        )
+        is False
+    )
+
+
+def test_session_cancellation_and_close_invalidate_current_turn():
+    from app.agent.session_state import InMemorySessionStore
+
+    store = InMemorySessionStore()
+    state = store.create("sess_1", "database_a")
+    turn = store.begin_turn("sess_1")
+    assert turn is not None
+
+    store.cancel_turn("sess_1", turn.turn_id)
+    assert turn.cancelled is True
+    assert store.is_current("sess_1", state.connection_id, turn.turn_id) is False
+
+    active_turn = store.begin_turn("sess_1")
+    assert active_turn is not None
+    store.cancel_session("sess_1")
+    assert state.status == "cancelled"
+    assert active_turn.cancelled is True
+    assert store.begin_turn("sess_1") is None
+
+    store.close_session("sess_1")
+    assert state.status == "closed"
+    assert store.is_current("sess_1", state.connection_id, active_turn.turn_id) is False
+
+
+def test_cancel_session_is_atomic_with_concurrent_begin_turn(monkeypatch):
+    from app.agent.session_state import InMemorySessionStore
+
+    store = InMemorySessionStore()
+    state = store.create("sess_1", "database_a")
+    cancel_reached_gap = threading.Event()
+    allow_cancel_to_finish = threading.Event()
+    original_cancel_turn = store.cancel_turn
+
+    def paused_cancel_turn(session_id, turn_id=None):
+        result = original_cancel_turn(session_id, turn_id)
+        cancel_reached_gap.set()
+        assert allow_cancel_to_finish.wait(timeout=2)
+        return result
+
+    monkeypatch.setattr(store, "cancel_turn", paused_cancel_turn)
+    cancelling = threading.Thread(target=store.cancel_session, args=("sess_1",))
+    cancelling.start()
+    assert cancel_reached_gap.wait(timeout=2)
+
+    turn_result = []
+    beginning = threading.Thread(
+        target=lambda: turn_result.append(store.begin_turn("sess_1"))
+    )
+    beginning.start()
+    beginning.join(timeout=0.1)
+    allow_cancel_to_finish.set()
+    cancelling.join(timeout=2)
+    beginning.join(timeout=2)
+
+    assert not cancelling.is_alive()
+    assert not beginning.is_alive()
+    assert state.status == "cancelled"
+    assert turn_result == [None]
+    assert state.current_turn is None or state.current_turn.cancelled is True
+
+
+def test_cleanup_expired_is_atomic_with_concurrent_create():
+    from app.agent.session_state import InMemorySessionStore
+
+    store = InMemorySessionStore(ttl_seconds=0)
+    store.create("sess_expired")
+    iteration_started = threading.Event()
+    allow_iteration = threading.Event()
+
+    class PausingDict(dict):
+        def items(self):
+            iterator = iter(super().items())
+
+            def paused_items():
+                first = next(iterator)
+                iteration_started.set()
+                assert allow_iteration.wait(timeout=2)
+                yield first
+                yield from iterator
+
+            return paused_items()
+
+    store._sessions = PausingDict(store._sessions)
+    errors = []
+    cleanup = threading.Thread(
+        target=lambda: _capture_thread_error(store.cleanup_expired, errors)
+    )
+    cleanup.start()
+    assert iteration_started.wait(timeout=2)
+
+    creating = threading.Thread(target=store.create, args=("sess_new",))
+    creating.start()
+    creating.join(timeout=0.1)
+    allow_iteration.set()
+    cleanup.join(timeout=2)
+    creating.join(timeout=2)
+
+    assert errors == []
+    assert not cleanup.is_alive()
+    assert not creating.is_alive()
+
+
+def _capture_thread_error(operation, errors):
+    try:
+        operation()
+    except Exception as exc:  # noqa: BLE001
+        errors.append(exc)
 
 
 def test_interruption_marks_current_response_inactive():
@@ -138,6 +289,7 @@ def test_agent_session_api_returns_websocket_fallback(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["session_id"].startswith("sess_")
+    assert payload["connection_id"].startswith("conn_")
     assert payload["mode"] == "websocket_fallback"
     assert payload["websocket_url"] == f"/api/agent/ws/{payload['session_id']}"
     assert payload["model"] == "qwen3.5-omni-flash-realtime"
@@ -180,6 +332,46 @@ def test_agent_tool_debug_uses_session_bound_rag_database(client):
     assert result["rag_database_id"] == db_a
     assert result["prompt"] == "A agent prompt"
     assert "红色电池" in result["results"][0]["text"]
+    assert result["matched"] is True
+    assert result["confidence"] == result["decision_score"]
+    assert result["decision_score_type"] == "vector"
+
+
+def test_agent_tool_arguments_cannot_override_session_database(client):
+    db_a = create_rag_database(client, "Bound DB", "Bound prompt")
+    db_b = create_rag_database(client, "Malicious DB", "Malicious prompt")
+    session_payload = client.post("/api/agent/session", json={"rag_database_id": db_a}).json()
+
+    response = client.post(
+        "/api/agent/tool",
+        json={
+            "session_id": session_payload["session_id"],
+            "name": "rag_search",
+            "arguments": {
+                "query": "database",
+                "top_k": 5,
+                "rag_database_id": db_b,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["rag_database_id"] == db_a
+
+
+def test_cancelled_session_cannot_dispatch_tools():
+    from app.agent.session_state import session_store
+    from app.agent.tools import dispatch_tool_call
+
+    state = session_store.create("sess_cancelled", "database_a")
+    session_store.cancel_session(state.session_id)
+
+    result = asyncio.run(
+        dispatch_tool_call("rag_search", {"query": "secret"}, state.session_id)
+    )
+
+    assert result["matched"] is False
+    assert result["error"]["code"] == "SESSION_INACTIVE"
 
 
 def test_agent_tool_debug_web_search_degrades_without_key(client, monkeypatch):
@@ -238,8 +430,10 @@ def test_qwen_client_maps_realtime_stream_events_to_browser_messages():
     async def send_event(message):
         outbound.append(message)
 
-    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen = QwenRealtimeClient(send_event=send_event, response_gate=lambda _: True)
     qwen.session_id = "sess_1"
+    qwen.pending_response_identity = bind_qwen_test_response(qwen)
+    qwen.response_identities.clear()
 
     asyncio.run(qwen._handle_event({"type": "response.created", "response": {"id": "resp_1"}}))
     asyncio.run(
@@ -291,8 +485,9 @@ def test_qwen_client_logs_audio_delta_metadata_at_debug(caplog):
     async def send_event(_message):
         return None
 
-    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen = QwenRealtimeClient(send_event=send_event, response_gate=lambda _: True)
     qwen.session_id = "sess_1"
+    bind_qwen_test_response(qwen)
 
     caplog.set_level(logging.DEBUG, logger="agent")
     asyncio.run(
@@ -322,8 +517,9 @@ def test_qwen_client_logs_answer_token_at_info_and_metadata_at_debug(caplog):
     async def send_event(_message):
         return None
 
-    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen = QwenRealtimeClient(send_event=send_event, response_gate=lambda _: True)
     qwen.session_id = "sess_1"
+    bind_qwen_test_response(qwen)
 
     caplog.set_level(logging.DEBUG, logger="agent")
     asyncio.run(
@@ -357,13 +553,18 @@ def test_qwen_client_sends_audio_cancel_and_tool_result_payloads():
             self.sent.append(payload)
 
     websocket = FakeWebSocket()
-    qwen = QwenRealtimeClient()
+    qwen = QwenRealtimeClient(response_gate=lambda _: True)
     qwen.session_id = "sess_1"
     qwen.websocket = websocket
 
     asyncio.run(qwen.send_audio_frame(b"\x01\x02"))
     asyncio.run(qwen.cancel_response("resp_1"))
-    asyncio.run(qwen.send_tool_result("call_1", {"matched": True, "results": []}))
+    identity = bind_qwen_test_response(qwen)
+    asyncio.run(
+        qwen.send_tool_result(
+            "call_1", {"matched": True, "results": []}, identity
+        )
+    )
 
     payloads = [__import__("json").loads(item) for item in websocket.sent]
     assert payloads[0]["type"] == "input_audio_buffer.append"
@@ -424,9 +625,10 @@ def test_qwen_client_dispatches_tool_call_and_returns_result(monkeypatch):
         outbound.append(message)
 
     monkeypatch.setattr(module, "dispatch_tool_call", fake_dispatch)
-    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen = QwenRealtimeClient(send_event=send_event, response_gate=lambda _: True)
     qwen.session_id = "sess_1"
     qwen.websocket = FakeWebSocket()
+    bind_qwen_test_response(qwen)
 
     asyncio.run(
         qwen._handle_event(
@@ -472,9 +674,10 @@ def test_qwen_client_logs_rag_match_summary_at_info(monkeypatch, caplog):
 
     monkeypatch.setattr(module, "dispatch_tool_call", fake_dispatch)
     caplog.set_level(logging.INFO, logger="tool_calls")
-    qwen = QwenRealtimeClient(send_event=send_event)
+    qwen = QwenRealtimeClient(send_event=send_event, response_gate=lambda _: True)
     qwen.session_id = "sess_1"
     qwen.websocket = FakeWebSocket()
+    bind_qwen_test_response(qwen)
 
     asyncio.run(
         qwen._handle_event(

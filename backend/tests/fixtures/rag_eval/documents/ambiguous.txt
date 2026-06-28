@@ -1,0 +1,1 @@
+For this device revision, reset means holding the button for ten seconds; restart means tapping it.

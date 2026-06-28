@@ -53,8 +53,12 @@ class InterruptionController:
 
         target_response_id = response_id or current_response_id
         agent_log.info("interrupt session=%s response=%s reason=%s", session_id, target_response_id, reason)
+        self.store.cancel_turn(
+            session_id,
+            state.current_turn.turn_id if state.current_turn else None,
+        )
         client = self._clients.get(session_id)
-        if client and target_response_id:
+        if client:
             await client.cancel_response(target_response_id)
 
         state.interrupted = True

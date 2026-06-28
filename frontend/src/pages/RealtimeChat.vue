@@ -12,6 +12,9 @@ import {
 } from '../webrtc/agentConversation'
 import { InterruptController } from '../webrtc/interruptController'
 import { RealtimeClient } from '../webrtc/realtimeClient'
+import { reduceConnection } from '../webrtc/connectionIdentity'
+import { ConnectionAttemptManager } from '../webrtc/connectionAttempt'
+import { VoiceTurnCommit } from '../webrtc/voiceTurnCommit'
 
 const status = ref('idle')
 const session = ref(null)
@@ -26,14 +29,21 @@ const isUserSpeaking = ref(false)
 const micActive = ref(false)
 const diagnosticRunning = ref(false)
 const diagnostics = ref([])
+const inputEnabled = ref(false)
+const retrievalDiagnostics = ref(null)
 const interruptedResponseIds = new Set()
 let activeDiagnostic = null
+const voiceTurnCommit = new VoiceTurnCommit()
+let databaseSwitchSequence = 0
 
 const props = defineProps({
   ragDatabaseId: { type: String, default: '' },
+  ragDatabase: { type: Object, default: null },
 })
+const emit = defineEmits(['status-change'])
 
-const client = new RealtimeClient()
+const connectionAttempts = new ConnectionAttemptManager()
+let client = new RealtimeClient()
 const audioPlayer = new StreamingAudioPlayer()
 const interruptController = new InterruptController()
 
@@ -43,6 +53,11 @@ const statusLabel = computed(() => {
     connecting: '连接中',
     connected: '已连接',
     listening: '收音中',
+    transcribing: '转写中',
+    retrieving: '检索中',
+    reranking: '重排中',
+    generating: '生成中',
+    switching_database: '切换数据库中',
     thinking: '思考中',
     speaking: '播报中',
     interrupted: '已打断',
@@ -50,93 +65,171 @@ const statusLabel = computed(() => {
   }
   return labels[status.value] || status.value
 })
+const connectButtonLabel = computed(() => {
+  if (status.value === 'error' && !connectionAttempts.current) return '重试连接'
+  return connectionAttempts.current ? '重新连接' : '连接 Agent'
+})
 
-client.onMessage((message) => {
-  recordDiagnosticEvent(message)
-  if (message.type === 'connected') {
-    status.value = 'connected'
-  } else if (message.type === 'response_started') {
-    currentResponseId.value = message.response_id
-    interruptedResponseIds.delete(message.response_id)
-    audioPlayer.setCurrentResponse(message.response_id)
-    setAgentSpeaking(true)
-    startAssistantResponse(messages.value, message.response_id)
-  } else if (message.type === 'text_delta') {
-    appendAssistantDelta(message.response_id || currentResponseId.value, message.delta || '')
-    status.value = 'speaking'
-  } else if (message.type === 'audio_delta') {
-    if (message.response_id) {
-      if (isResponseInterrupted(interruptedResponseIds, message.response_id)) return
+function bindClient(candidate) {
+  candidate.onMessage((message) => {
+    if (candidate !== connectionAttempts.current) return
+    recordDiagnosticEvent(message)
+    if (message.type === 'connected') {
+      status.value = 'connected'
+      inputEnabled.value = true
+    } else if (message.type === 'pipeline_stage') {
+      status.value = message.stage
+    } else if (message.type === 'retrieval_result') {
+      retrievalDiagnostics.value = message.result || message.retrieval || message
+      sources.value = retrievalDiagnostics.value.results || []
+    } else if (message.type === 'response_started') {
+      currentResponseId.value = message.response_id
+      interruptedResponseIds.delete(message.response_id)
       audioPlayer.setCurrentResponse(message.response_id)
-      audioPlayer.enqueueAudio(message.response_id, message.audio || '')
       setAgentSpeaking(true)
+      startAssistantResponse(messages.value, message.response_id)
+    } else if (message.type === 'text_delta') {
+      appendAssistantDelta(message.response_id || currentResponseId.value, message.delta || '')
       status.value = 'speaking'
+    } else if (message.type === 'audio_delta') {
+      if (message.response_id) {
+        if (isResponseInterrupted(interruptedResponseIds, message.response_id)) return
+        audioPlayer.setCurrentResponse(message.response_id)
+        audioPlayer.enqueueAudio(message.response_id, message.audio || '')
+        setAgentSpeaking(true)
+        status.value = 'speaking'
+      }
+    } else if (message.type === 'tool_call') {
+      status.value = 'thinking'
+      toolCalls.value.push({
+        id: `${Date.now()}-${toolCalls.value.length}`,
+        name: message.tool_name,
+        status: '调用中',
+      })
+    } else if (message.type === 'tool_result') {
+      const last = toolCalls.value[toolCalls.value.length - 1]
+      if (last) last.status = message.result?.matched ? '已命中' : '无可靠结果'
+      if (message.tool_name === 'rag_search') sources.value = message.result?.results || []
+      if (message.tool_name === 'web_search') sources.value = message.result?.results || []
+    } else if (message.type === 'clear_audio_buffer') {
+      audioPlayer.clear()
+    } else if (message.type === 'response_cancelled') {
+      setAgentSpeaking(false)
+      status.value = 'interrupted'
+    } else if (message.type === 'response_done') {
+      setAgentSpeaking(false)
+      status.value = micActive.value ? 'listening' : 'connected'
+    } else if (message.type === 'speech_started') {
+      isUserSpeaking.value = true
+      stopCurrentPlayback('server_speech_started')
+    } else if (message.type === 'speech_stopped') {
+      isUserSpeaking.value = false
+    } else if (message.type === 'disconnected') {
+      setAgentSpeaking(false)
+      micActive.value = false
+      status.value = 'idle'
+      inputEnabled.value = false
+    } else if (message.type === 'error') {
+      error.value = message.message || '实时 Agent 出错'
+      status.value = 'error'
+      inputEnabled.value = false
     }
-  } else if (message.type === 'tool_call') {
-    status.value = 'thinking'
-    toolCalls.value.push({
-      id: `${Date.now()}-${toolCalls.value.length}`,
-      name: message.tool_name,
-      status: '调用中',
-    })
-  } else if (message.type === 'tool_result') {
-    const last = toolCalls.value[toolCalls.value.length - 1]
-    if (last) last.status = message.result?.matched ? '已命中' : '无可靠结果'
-    if (message.tool_name === 'rag_search') sources.value = message.result?.results || []
-    if (message.tool_name === 'web_search') sources.value = message.result?.results || []
-  } else if (message.type === 'clear_audio_buffer') {
-    audioPlayer.clear()
-  } else if (message.type === 'response_cancelled') {
-    setAgentSpeaking(false)
-    status.value = 'interrupted'
-  } else if (message.type === 'response_done') {
-    setAgentSpeaking(false)
-    status.value = micActive.value ? 'listening' : 'connected'
-  } else if (message.type === 'speech_started') {
-    isUserSpeaking.value = true
-    stopCurrentPlayback('server_speech_started')
-  } else if (message.type === 'speech_stopped') {
-    isUserSpeaking.value = false
-  } else if (message.type === 'disconnected') {
-    setAgentSpeaking(false)
-    micActive.value = false
-    status.value = 'idle'
-  } else if (message.type === 'error') {
-    error.value = message.message || '实时 Agent 出错'
+    publishDiagnostics()
+  })
+}
+
+interruptController.onUserSpeechStart((shouldInterrupt) => {
+  voiceTurnCommit.startUtterance()
+  isUserSpeaking.value = true
+  if (shouldInterrupt) stopCurrentPlayback('user_speech')
+})
+
+interruptController.onUserSpeechEnd(() => {
+  const activeSessionId = session.value?.session_id
+  if (
+    !micActive.value ||
+    !activeSessionId ||
+    client.sessionId !== activeSessionId
+  ) return
+  if (!voiceTurnCommit.finishUtterance()) return
+  isUserSpeaking.value = false
+  client.commitAudio()
+  status.value = 'transcribing'
+})
+
+async function connect(
+  databaseId = props.ragDatabaseId,
+  { reconnecting = false, switchSequence = null } = {},
+) {
+  if (!databaseId) {
+    error.value = '请先选择 RAG 数据库'
     status.value = 'error'
+    inputEnabled.value = false
+    return false
   }
-  publishDiagnostics()
-})
-
-interruptController.onUserSpeechStart(() => {
-  stopCurrentPlayback('user_speech')
-})
-
-async function connect() {
-  if (status.value === 'connecting' || status.value === 'connected') return
+  if (!reconnecting && (status.value === 'connecting' || status.value === 'connected')) return true
   error.value = ''
-  status.value = 'connecting'
+  status.value = reconnecting ? 'switching_database' : 'connecting'
+  inputEnabled.value = false
+  const candidate = new RealtimeClient()
+  bindClient(candidate)
   try {
-    session.value = await client.createSession({ rag_database_id: props.ragDatabaseId || undefined })
-    await client.connect()
+    const result = await connectionAttempts.connect(
+      databaseId,
+      candidate,
+      () => (
+        (switchSequence === null || switchSequence === databaseSwitchSequence)
+        && databaseId === props.ragDatabaseId
+      ),
+    )
+    if (result.status === 'stale') return false
+    if (result.status === 'failed') throw result.error
+    client = candidate
+    session.value = result.session
+    const next = reduceConnection(
+      {
+        status: status.value,
+        inputEnabled: inputEnabled.value,
+        pendingDatabaseId: reconnecting ? databaseId : null,
+      },
+      { type: 'CONNECTED', databaseId },
+    )
+    status.value = next.status
+    inputEnabled.value = next.inputEnabled
+    return true
   } catch (err) {
+    if (connectionAttempts.current === candidate) await connectionAttempts.disconnect()
+    session.value = null
     error.value = err?.message || '连接失败'
-    status.value = 'error'
+    const next = reduceConnection(
+      {
+        status: status.value,
+        inputEnabled: false,
+        pendingDatabaseId: databaseId,
+      },
+      { type: 'CONNECT_FAILED' },
+    )
+    status.value = next.status
+    inputEnabled.value = next.inputEnabled
+    return false
   }
 }
 
 async function toggleMic() {
+  if (status.value === 'switching_database') return
   try {
     if (!client.sessionId) await connect()
     if (micActive.value) {
       client.stopMicrophone()
       interruptController.stop()
+      voiceTurnCommit.reset()
       micActive.value = false
       status.value = 'connected'
       return
     }
     const stream = await client.startMicrophone()
     await interruptController.start(stream)
+    voiceTurnCommit.reset()
     micActive.value = true
     status.value = 'listening'
   } catch (err) {
@@ -150,6 +243,7 @@ async function sendText() {
   if (!text) return
   if (!client.sessionId || status.value === 'idle' || status.value === 'error') await connect()
   if (status.value === 'error') return
+  if (!inputEnabled.value) return
   messages.value.push({ id: `${Date.now()}-u`, role: 'user', text })
   client.sendUserText(text)
   textInput.value = ''
@@ -182,6 +276,17 @@ function appendAssistantDelta(responseId, delta) {
 function setAgentSpeaking(value) {
   agentSpeaking.value = value
   interruptController.setAgentSpeaking(value)
+}
+
+function clearConnectionArtifacts() {
+  session.value = null
+  voiceTurnCommit.reset()
+  micActive.value = false
+  setAgentSpeaking(false)
+  currentResponseId.value = null
+  sources.value = []
+  toolCalls.value = []
+  retrievalDiagnostics.value = null
 }
 
 async function runStreamDiagnostic() {
@@ -333,25 +438,50 @@ onMounted(() => {
 
 watch(
   () => props.ragDatabaseId,
-  () => {
-    if (!client.sessionId) return
+  async (next, previous) => {
+    const wasConnected = Boolean(
+      connectionAttempts.current
+      || connectionAttempts.pending
+      || status.value === 'connecting'
+      || status.value === 'switching_database',
+    )
+    if (!previous || !next || next === previous || !wasConnected) return
+    const sequence = ++databaseSwitchSequence
+    const transition = reduceConnection(
+      {
+        status: status.value,
+        inputEnabled: inputEnabled.value,
+        pendingDatabaseId: null,
+      },
+      { type: 'DATABASE_CHANGED', databaseId: next, wasConnected },
+    )
+    status.value = transition.status
+    inputEnabled.value = transition.inputEnabled
+    error.value = ''
     interruptController.stop()
     audioPlayer.stop()
-    client.close()
-    session.value = null
-    micActive.value = false
-    setAgentSpeaking(false)
-    status.value = 'idle'
+    client.stopMicrophone()
+    await connectionAttempts.disconnect()
+    if (sequence !== databaseSwitchSequence) return
+    clearConnectionArtifacts()
+    await connect(next, { reconnecting: true, switchSequence: sequence })
   },
 )
 
 onBeforeUnmount(() => {
   interruptController.stop()
   audioPlayer.stop()
-  client.close()
+  void connectionAttempts.disconnect()
+  emit('status-change', 'idle')
   delete window.__realtimeAgent
   delete window.__realtimeDiagnostics
 })
+
+watch(
+  status,
+  (value) => emit('status-change', value),
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -360,17 +490,29 @@ onBeforeUnmount(() => {
       <div>
         <h2>实时语音 Agent</h2>
         <p>{{ session?.model || 'qwen3.5-omni-flash-realtime' }} · {{ statusLabel }}<span v-if="isUserSpeaking"> · 用户说话中</span></p>
+        <p class="agent-database">当前数据库：{{ ragDatabase?.name || ragDatabaseId || '未选择' }}</p>
       </div>
       <div class="agent-actions">
-        <button class="primary" :disabled="status === 'connecting'" @click="connect">
-          {{ client.sessionId ? '重新连接' : '连接 Agent' }}
+        <button class="primary" :disabled="status === 'connecting' || status === 'switching_database'" @click="connect()">
+          {{ connectButtonLabel }}
         </button>
-        <VoiceButton :active="micActive" :disabled="status === 'connecting'" @click="toggleMic" />
+        <VoiceButton :active="micActive" :disabled="!inputEnabled" @click="toggleMic" />
         <button class="danger-button" :disabled="!agentSpeaking" @click="manualInterrupt">打断</button>
       </div>
     </div>
 
     <p v-if="error" class="error">{{ error }}</p>
+
+    <section class="pipeline-status" aria-live="polite">
+      <strong>RAG-first 阶段：{{ statusLabel }}</strong>
+      <span v-if="retrievalDiagnostics">
+        判定 {{ Number(retrievalDiagnostics.decision_score ?? 0).toFixed(3) }}
+        / 阈值 {{ Number(retrievalDiagnostics.decision_threshold ?? 0).toFixed(3) }}
+        · {{ retrievalDiagnostics.decision_score_type || 'unknown' }}
+        · Rerank {{ retrievalDiagnostics.rerank_degraded ? '已降级' : '正常' }}
+      </span>
+      <span>数据库：{{ ragDatabase?.name || ragDatabaseId || '-' }}</span>
+    </section>
 
     <section class="agent-card diagnostic-panel">
       <div class="agent-card-head">
@@ -403,8 +545,15 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="agent-input">
-      <textarea v-model="textInput" placeholder="也可以输入文字调试工具调用…" @keydown.ctrl.enter="sendText"></textarea>
-      <button class="primary" @click="sendText">发送</button>
+      <textarea v-model="textInput" :disabled="!inputEnabled" placeholder="也可以输入文字调试工具调用…" @keydown.ctrl.enter="sendText"></textarea>
+      <button
+        class="primary"
+        data-testid="agent-send"
+        :disabled="!inputEnabled"
+        @click="sendText"
+      >
+        发送
+      </button>
     </div>
   </section>
 </template>

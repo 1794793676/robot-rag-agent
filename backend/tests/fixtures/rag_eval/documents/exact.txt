@@ -1,0 +1,1 @@
+Reset the device by holding its reset button for ten seconds.

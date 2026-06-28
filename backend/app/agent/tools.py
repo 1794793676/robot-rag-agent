@@ -132,21 +132,34 @@ async def get_session_context(session_id: str) -> dict[str, Any]:
 
 
 async def dispatch_tool_call(name: str, arguments: dict[str, Any], session_id: str) -> dict[str, Any]:
-    state = session_store.touch(session_id)
-    if state:
-        state.last_tool_call = {"name": name, "arguments": arguments}
+    state = session_store.get(session_id)
+    if not state:
+        return {
+            "matched": False,
+            "error": {"code": "SESSION_NOT_FOUND", "message": "Session not found"},
+        }
+    if state.status != "active":
+        return {
+            "matched": False,
+            "error": {
+                "code": "SESSION_INACTIVE",
+                "message": f"Session is {state.status}",
+            },
+        }
+    session_store.touch(session_id)
+    safe_arguments = dict(arguments)
+    safe_arguments.pop("rag_database_id", None)
+    state.last_tool_call = {"name": name, "arguments": safe_arguments}
     if name == "rag_search":
-        selected_database_id = arguments.get("rag_database_id") or (
-            state.rag_database_id if state else None
-        )
         result = await rag_search(
-            arguments["query"], arguments.get("top_k", 5), selected_database_id
+            safe_arguments["query"], safe_arguments.get("top_k", 5), state.rag_database_id
         )
-        if state:
-            state.last_rag_results = result.get("results", [])
+        state.last_rag_results = result.get("results", [])
         return result
     if name == "web_search":
-        return await web_search(arguments["query"], arguments.get("max_results", 5))
+        return await web_search(
+            safe_arguments["query"], safe_arguments.get("max_results", 5)
+        )
     if name == "get_session_context":
         return await get_session_context(session_id)
     return {

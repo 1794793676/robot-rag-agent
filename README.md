@@ -80,6 +80,7 @@ MAX_UPLOAD_MB=30
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 QWEN_REALTIME_MODEL=qwen3.5-omni-flash-realtime
 QWEN_REALTIME_REGION=singapore
+QWEN_INPUT_TRANSCRIPTION_MODEL=qwen3-asr-flash-realtime
 RAG_BASE_URL=http://127.0.0.1:8000
 WEB_SEARCH_PROVIDER=tavily
 TAVILY_API_KEY=
@@ -285,3 +286,19 @@ Browser mic/text -> /api/agent/ws/{session_id} -> Qwen Realtime WebSocket
 - PDF 只提取文本层，不处理图片、公式结构和扫描页。
 - SQLite 和进程内索引面向单实例轻量部署，不支持多进程同时写入。
 - Qwen 直连 WebRTC 需要官方 allowlist；未开通前使用 WebSocket fallback。
+
+## 后端 RAG-first 与评估
+
+`storage/rag.db` 是物理 SQLite 持久化文件；选择器中的条目是该文件内按 `rag_database_id` 隔离的逻辑 RAG 数据库，不是独立 SQLite 文件。切换数据库会取消当前 turn/session、断开旧 Agent，并使用新数据库自动重连。
+
+每轮文本或语音转写都先由后端检索当前数据库，然后才手动调用 Qwen Realtime `response.create`。实时语音、流式音频和插话中断仍保留。所有事件使用 `session_id`、`connection_id`、`turn_id`、`rag_database_id` 隔离，旧连接迟到事件会被丢弃。
+
+Embedding、Chat、Realtime 和 `qwen3-rerank` 共用 `DASHSCOPE_API_KEY`。向量检索先召回 `RERANK_CANDIDATE_K=30` 个候选；rerank 成功时以 `RERANK_THRESHOLD=0.50` 判定，未启用、超时或失败时降级为 `SIMILARITY_THRESHOLD=0.35`，默认超时为 `RERANK_TIMEOUT_SECONDS=2.0`。
+
+```bash
+cd backend
+.venv/bin/python scripts/evaluate_rag.py --fixtures tests/fixtures/rag_eval/cases.json --mode vector --output /tmp/rag-eval-vector
+.venv/bin/python scripts/evaluate_rag.py --fixtures tests/fixtures/rag_eval/cases.json --mode rerank --fake-reranker --candidate-k 30 --output /tmp/rag-eval-rerank
+```
+
+移除 `--fake-reranker` 并配置 Key 可运行真实 API 评估。报告包含命中率 `TP/(TP+FN)`、误命中率 `FP/(FP+TN)`、误拒率 `FN/(TP+FN)`、Precision@K、Recall@K 和 MRR。

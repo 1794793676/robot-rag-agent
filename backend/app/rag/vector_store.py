@@ -85,7 +85,12 @@ class VectorStore:
                     logger.exception("HNSW initialization failed; using NumPy fallback")
             self.persist()
 
-    def search(self, query_vector: list[float], top_k: int) -> list[tuple[str, float]]:
+    def search(
+        self,
+        query_vector: list[float] | np.ndarray,
+        top_k: int,
+        allowed_chunk_ids: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
         with self._lock:
             if not self._records or top_k <= 0:
                 return []
@@ -95,6 +100,28 @@ class VectorStore:
             norm = np.linalg.norm(query)
             if norm:
                 query = query / norm
+            if allowed_chunk_ids is not None:
+                allowed_indices = np.fromiter(
+                    (
+                        index
+                        for index, record in enumerate(self._records)
+                        if record.chunk_id in allowed_chunk_ids
+                    ),
+                    dtype=np.intp,
+                )
+                if not len(allowed_indices):
+                    return []
+                scoped_scores = self._matrix[allowed_indices] @ query
+                count = min(top_k, len(allowed_indices))
+                scoped_order = np.argsort(-scoped_scores)[:count]
+                return [
+                    (
+                        self._records[int(allowed_indices[index])].chunk_id,
+                        float(scoped_scores[index]),
+                    )
+                    for index in scoped_order
+                ]
+
             count = min(top_k, len(self._records))
             if self._hnsw is not None:
                 labels, distances = self._hnsw.knn_query(query, k=count)

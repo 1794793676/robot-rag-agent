@@ -8,6 +8,7 @@ const compiled = await transform(source, { loader: 'ts', format: 'esm' })
 const {
   hasConnectionIdentity,
   matchesActiveConnection,
+  reduceConnection,
 } = await import(`data:text/javascript,${encodeURIComponent(compiled.code)}`)
 
 const active = {
@@ -37,4 +38,68 @@ test('recognizes backend events carrying any connection identity field', () => {
   assert.equal(hasConnectionIdentity({ connection_id: 'c2' }), true)
   assert.equal(hasConnectionIdentity({ rag_database_id: 'db2' }), true)
   assert.equal(hasConnectionIdentity({ type: 'error', message: 'local parse error' }), false)
+})
+
+test('database change disables input while an existing agent reconnects', () => {
+  assert.deepEqual(
+    reduceConnection(
+      { status: 'connected', inputEnabled: true, pendingDatabaseId: null },
+      { type: 'DATABASE_CHANGED', databaseId: 'db-b' },
+    ),
+    {
+      status: 'switching_database',
+      inputEnabled: false,
+      pendingDatabaseId: 'db-b',
+    },
+  )
+})
+
+test('successful reconnect enables input only for the pending database', () => {
+  const switching = {
+    status: 'switching_database',
+    inputEnabled: false,
+    pendingDatabaseId: 'db-b',
+  }
+  assert.deepEqual(
+    reduceConnection(switching, { type: 'CONNECTED', databaseId: 'db-b' }),
+    { status: 'connected', inputEnabled: true, pendingDatabaseId: null },
+  )
+  assert.deepEqual(
+    reduceConnection(switching, { type: 'CONNECTED', databaseId: 'db-a' }),
+    switching,
+  )
+})
+
+test('failed reconnect remains disconnected on the selected database', () => {
+  assert.deepEqual(
+    reduceConnection(
+      {
+        status: 'switching_database',
+        inputEnabled: false,
+        pendingDatabaseId: 'db-b',
+      },
+      { type: 'CONNECT_FAILED' },
+    ),
+    {
+      status: 'error',
+      inputEnabled: false,
+      pendingDatabaseId: 'db-b',
+    },
+  )
+})
+
+test('database change does not connect an agent that was not connected', () => {
+  const disconnected = {
+    status: 'idle',
+    inputEnabled: false,
+    pendingDatabaseId: null,
+  }
+  assert.deepEqual(
+    reduceConnection(disconnected, {
+      type: 'DATABASE_CHANGED',
+      databaseId: 'db-b',
+      wasConnected: false,
+    }),
+    disconnected,
+  )
 })
