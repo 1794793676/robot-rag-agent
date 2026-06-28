@@ -1,0 +1,2 @@
+Action | Duration
+Reset | 10 seconds

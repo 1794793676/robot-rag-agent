@@ -1,0 +1,1 @@
+First disconnect power. In the next section, reconnect it while holding reset for ten seconds.

@@ -6,11 +6,14 @@ from pathlib import Path
 import pytest
 
 from scripts.evaluate_rag import (
+    RERANK_GRID,
+    VECTOR_GRID,
     calibrate,
     evaluate_cases,
     load_fixture,
     render_markdown,
     vector_results,
+    rerank_results,
 )
 
 
@@ -23,7 +26,14 @@ def test_fixture_has_required_coverage():
     assert len(cases) >= 100
     assert sum(not case["relevant_doc_ids"] for case in cases) >= 40
     assert sum(case.get("category") == "cross_database" for case in cases) >= 20
-    assert len({case["id"] for case in cases}) == len(cases)
+    assert len({case["case_id"] for case in cases}) == len(cases)
+    required = {"case_id", "rag_database_id", "query", "answerable",
+                "relevant_doc_ids", "relevant_chunk_ids", "tags", "expected_facts"}
+    assert all(required <= case.keys() for case in cases)
+    assert {"exact", "paraphrase", "table", "multichunk", "ambiguous",
+            "hard_negative", "unrelated", "cross_database"} <= {
+                tag for case in cases for tag in case["tags"]
+            }
 
 
 def test_metric_formulas_and_counts():
@@ -56,6 +66,30 @@ def test_calibration_obeys_constraints_and_is_deterministic():
     assert len(result["grid"]) == 3
 
 
+def test_decision_only_uses_final_top_k():
+    case = {"relevant_doc_ids": ["a"], "relevant_chunk_ids": [], "tags": ["exact"],
+            "results": [{"doc_id": "x", "score": .9}, {"doc_id": "a", "score": .8}]}
+    metrics = evaluate_cases([case], threshold=.5, k=1)
+    assert metrics["counts"]["fn"] == 1
+    assert metrics["per_case"][0]["decision"] is False
+
+
+def test_failed_calibration_uses_documented_default():
+    cases = [{"relevant_doc_ids": ["a"], "relevant_chunk_ids": [], "tags": ["exact"],
+              "results": []}]
+    result = calibrate(cases, [.25], max_frr=0, default_threshold=.35)
+    assert result["status"] == "failed"
+    assert result["selected_threshold"] == .35
+
+
+def test_mode_specific_grids_and_fake_reranker(monkeypatch):
+    assert VECTOR_GRID == pytest.approx([.25, .30, .35, .40, .45, .50, .55, .60])
+    assert RERANK_GRID == pytest.approx([.30, .35, .40, .45, .50, .55, .60, .65, .70, .75, .80])
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    case = load_fixture(FIXTURE)[0]
+    assert rerank_results(case, fake=True) == vector_results(case)
+
+
 def test_vector_scoring_is_scoped_to_case_database():
     case = {
         "query": "secret payroll policy",
@@ -69,11 +103,12 @@ def test_vector_scoring_is_scoped_to_case_database():
 
 
 def test_reports_include_metrics():
-    report = render_markdown({"mode": "vector", "case_count": 4, "calibration": {
-        "selected_threshold": .5,
-        "selected_metrics": evaluate_cases([], .5),
-        "grid": [],
-    }})
+    metrics = evaluate_cases([], .5)
+    report = render_markdown({
+        "mode": "vector", "model_id": "fake", "config_id": "test",
+        "case_count": 4, "aggregate": metrics,
+        "calibration": {"status": "passed", "selected_threshold": .5},
+    })
     assert "RAG Evaluation Report" in report
     assert "Precision@5" in report
     assert "False hit rate" in report
@@ -87,9 +122,11 @@ def test_vector_cli_writes_json_and_markdown(tmp_path):
     ]
     completed = subprocess.run(command, cwd=Path(__file__).parents[1], text=True, capture_output=True)
     assert completed.returncode == 0, completed.stderr
-    payload = json.loads(output.with_suffix(".json").read_text())
+    payload = json.loads((output / "report.json").read_text())
     assert payload["case_count"] >= 100
-    assert output.with_suffix(".md").read_text().startswith("# RAG Evaluation Report")
+    assert payload["per_case"]
+    assert payload["per_category"]
+    assert (output / "report.md").read_text().startswith("# RAG Evaluation Report")
 
 
 def test_vector_cli_accepts_fixture_directory(tmp_path):
@@ -101,5 +138,5 @@ def test_vector_cli_accepts_fixture_directory(tmp_path):
     ]
     completed = subprocess.run(command, cwd=Path(__file__).parents[1], text=True, capture_output=True)
     assert completed.returncode == 0, completed.stderr
-    assert output.with_suffix(".json").is_file()
-    assert output.with_suffix(".md").is_file()
+    assert (output / "report.json").is_file()
+    assert (output / "report.md").is_file()

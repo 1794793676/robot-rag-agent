@@ -1,5 +1,16 @@
 {
+  "version": "1.0",
   "description": "Deterministic offline RAG evaluation corpus",
+  "documents": {
+    "exact": "documents/exact.txt",
+    "paraphrase": "documents/paraphrase.txt",
+    "table": "documents/table.txt",
+    "multichunk": "documents/multichunk.txt",
+    "ambiguous": "documents/ambiguous.txt",
+    "hard_negative": "documents/hard_negative.txt",
+    "unrelated": "documents/unrelated.txt",
+    "cross_database": "documents/cross_database.txt"
+  },
   "groups": [
     {
       "kind": "positive",
