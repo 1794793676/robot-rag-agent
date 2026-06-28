@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 
-from app.agent.qwen_realtime_client import QwenRealtimeClient
 from app.agent.realtime_session import RealtimeAgentSession
 from app.agent.session_state import InMemorySessionStore
 from app.services.rag_first_turn import GenerationContext, TurnIdentity
@@ -50,7 +49,9 @@ def test_qwen_manual_protocol_and_explicit_response_creation(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "key")
     monkeypatch.setattr(module.websockets, "connect", connect)
     identity = TurnIdentity("sess", "conn", "turn", "db")
-    qwen = QwenRealtimeClient(response_gate=lambda candidate: candidate == identity)
+    qwen = module.QwenRealtimeClient(
+        response_gate=lambda candidate: candidate == identity
+    )
 
     asyncio.run(qwen.connect("sess"))
     asyncio.run(qwen.commit_audio_buffer())
@@ -66,6 +67,8 @@ def test_qwen_manual_protocol_and_explicit_response_creation(monkeypatch):
 
 
 def test_qwen_transcription_event_calls_backend_without_creating_response():
+    from app.agent.qwen_realtime_client import QwenRealtimeClient
+
     transcripts = []
     qwen = QwenRealtimeClient(transcript_callback=transcripts.append)
     qwen.session_id = "sess"
@@ -180,7 +183,7 @@ def test_cancelled_tool_result_does_not_continue_response(monkeypatch):
         return {"matched": False}
 
     monkeypatch.setattr(module, "dispatch_tool_call", dispatch)
-    qwen = QwenRealtimeClient(
+    qwen = module.QwenRealtimeClient(
         response_gate=lambda candidate: store.is_current_and_bound(
             candidate.session_id,
             candidate.connection_id,
@@ -216,6 +219,8 @@ def test_cancelled_tool_result_does_not_continue_response(monkeypatch):
 
 
 def test_response_events_keep_bound_identity_and_suppress_unmapped_or_stale():
+    from app.agent.qwen_realtime_client import QwenRealtimeClient
+
     outbound = []
     current = [True]
     identity = TurnIdentity("sess", "conn-old", "turn-old", "db-old")
