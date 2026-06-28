@@ -23,7 +23,11 @@ class FakeWebSocket {
     FakeWebSocket.instances.push(this)
   }
 
-  send() {}
+  sent = []
+
+  send(payload) {
+    this.sent.push(JSON.parse(payload))
+  }
 
   close() {
     this.readyState = 3
@@ -102,4 +106,26 @@ test('ignores identity events and close callbacks from an old socket', async () 
   })
 
   assert.deepEqual(delivered.map((message) => message.type), ['retrieval'])
+})
+
+test('commits the current microphone audio turn', async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      session_id: 's1',
+      connection_id: 'c1',
+      rag_database_id: 'db1',
+      websocket_url: '/ws',
+    }),
+  })
+  const client = new RealtimeClient()
+  await client.createSession()
+  const connected = client.connect()
+  const socket = FakeWebSocket.instances.at(-1)
+  socket.open()
+  await connected
+
+  client.commitAudio()
+
+  assert.deepEqual(socket.sent, [{ type: 'commit_audio', session_id: 's1' }])
 })

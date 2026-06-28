@@ -113,6 +113,10 @@ export class RealtimeClient {
     this.send({ type: 'interrupt', response_id: responseId, reason })
   }
 
+  commitAudio(): void {
+    this.send({ type: 'commit_audio' })
+  }
+
   async close(): Promise<void> {
     const ws = this.ws
     const identity = this.identity

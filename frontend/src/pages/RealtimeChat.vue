@@ -28,6 +28,7 @@ const diagnosticRunning = ref(false)
 const diagnostics = ref([])
 const interruptedResponseIds = new Set()
 let activeDiagnostic = null
+let voiceTurnCommitted = false
 
 const props = defineProps({
   ragDatabaseId: { type: String, default: '' },
@@ -43,6 +44,7 @@ const statusLabel = computed(() => {
     connecting: '连接中',
     connected: '已连接',
     listening: '收音中',
+    transcribing: '转写中',
     thinking: '思考中',
     speaking: '播报中',
     interrupted: '已打断',
@@ -91,8 +93,10 @@ client.onMessage((message) => {
     status.value = 'interrupted'
   } else if (message.type === 'response_done') {
     setAgentSpeaking(false)
+    voiceTurnCommitted = false
     status.value = micActive.value ? 'listening' : 'connected'
   } else if (message.type === 'speech_started') {
+    voiceTurnCommitted = false
     isUserSpeaking.value = true
     stopCurrentPlayback('server_speech_started')
   } else if (message.type === 'speech_stopped') {
@@ -110,6 +114,20 @@ client.onMessage((message) => {
 
 interruptController.onUserSpeechStart(() => {
   stopCurrentPlayback('user_speech')
+})
+
+interruptController.onUserSpeechEnd(() => {
+  const activeSessionId = session.value?.session_id
+  if (
+    voiceTurnCommitted ||
+    !micActive.value ||
+    !activeSessionId ||
+    client.sessionId !== activeSessionId
+  ) return
+  voiceTurnCommitted = true
+  isUserSpeaking.value = false
+  client.commitAudio()
+  status.value = 'transcribing'
 })
 
 async function connect() {
@@ -131,12 +149,14 @@ async function toggleMic() {
     if (micActive.value) {
       client.stopMicrophone()
       interruptController.stop()
+      voiceTurnCommitted = false
       micActive.value = false
       status.value = 'connected'
       return
     }
     const stream = await client.startMicrophone()
     await interruptController.start(stream)
+    voiceTurnCommitted = false
     micActive.value = true
     status.value = 'listening'
   } catch (err) {
@@ -339,6 +359,7 @@ watch(
     audioPlayer.stop()
     client.close()
     session.value = null
+    voiceTurnCommitted = false
     micActive.value = false
     setAgentSpeaking(false)
     status.value = 'idle'
