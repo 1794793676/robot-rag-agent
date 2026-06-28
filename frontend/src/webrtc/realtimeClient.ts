@@ -1,7 +1,14 @@
+import {
+  hasConnectionIdentity,
+  matchesActiveConnection,
+  type ConnectionIdentity,
+} from './connectionIdentity'
+
 type MessageHandler = (message: any) => void
 
 export class RealtimeClient {
   sessionId: string | null = null
+  identity: ConnectionIdentity | null = null
   websocketUrl = ''
   private ws: WebSocket | null = null
   private stream: MediaStream | null = null
@@ -24,6 +31,11 @@ export class RealtimeClient {
     if (!response.ok) throw new Error(`创建会话失败：${response.status}`)
     const sessionPayload = await response.json()
     this.sessionId = sessionPayload.session_id
+    this.identity = {
+      sessionId: sessionPayload.session_id,
+      connectionId: sessionPayload.connection_id,
+      ragDatabaseId: sessionPayload.rag_database_id,
+    }
     this.websocketUrl = this.absoluteWsUrl(sessionPayload.websocket_url)
     return sessionPayload
   }
@@ -32,15 +44,19 @@ export class RealtimeClient {
     if (!this.sessionId || !this.websocketUrl) await this.createSession()
     await new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(this.websocketUrl)
+      const identity = this.identity
       this.ws = ws
       ws.onopen = () => resolve()
       ws.onerror = () => reject(new Error('实时连接失败'))
       ws.onclose = () => {
+        if (this.ws !== ws || this.identity !== identity) return
         this.handlers.forEach((handler) => handler({ type: 'disconnected', message: '实时连接已断开' }))
       }
       ws.onmessage = (event) => {
+        if (this.ws !== ws || this.identity !== identity) return
         try {
           const message = JSON.parse(event.data)
+          if (hasConnectionIdentity(message) && !matchesActiveConnection(message, identity)) return
           this.handlers.forEach((handler) => handler(message))
         } catch {
           this.handlers.forEach((handler) => handler({ type: 'error', message: '收到无效消息' }))
@@ -97,11 +113,36 @@ export class RealtimeClient {
     this.send({ type: 'interrupt', response_id: responseId, reason })
   }
 
-  close(): void {
+  async close(): Promise<void> {
+    const ws = this.ws
+    const identity = this.identity
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'close', session_id: identity?.sessionId ?? this.sessionId }))
+    }
     this.stopMicrophone()
-    this.send({ type: 'close' })
-    this.ws?.close()
-    this.ws = null
+    if (ws) {
+      await new Promise<void>((resolve) => {
+        const previousOnClose = ws.onclose
+        let settled = false
+        const finish = () => {
+          if (settled) return
+          settled = true
+          resolve()
+        }
+        ws.onclose = (event) => {
+          previousOnClose?.call(ws, event)
+          finish()
+        }
+        ws.close()
+        setTimeout(finish, 250)
+      })
+    }
+    if (this.ws === ws && this.identity === identity) {
+      this.ws = null
+      this.identity = null
+      this.sessionId = null
+      this.websocketUrl = ''
+    }
   }
 
   private send(payload: Record<string, any>): void {
