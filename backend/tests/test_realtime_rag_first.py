@@ -392,7 +392,6 @@ def test_empty_transcript_and_qwen_error_reset_audio_commit():
         )
     )
     assert session._audio_commit_pending is False
-
     session._audio_commit_pending = True
     asyncio.run(
         session.qwen._handle_event(
@@ -400,3 +399,87 @@ def test_empty_transcript_and_qwen_error_reset_audio_commit():
         )
     )
     assert session._audio_commit_pending is False
+
+
+def test_response_creates_are_serialized_until_retired_pending_is_resolved():
+    from app.agent.qwen_realtime_client import QwenRealtimeClient
+
+    first = TurnIdentity("sess", "conn", "turn-a", "db")
+    second = TurnIdentity("sess", "conn", "turn-b", "db")
+    socket = QwenSocket()
+    qwen = QwenRealtimeClient(response_gate=lambda _: True)
+    qwen.websocket = socket
+
+    async def exercise():
+        await qwen.create_grounded_response("A", first)
+        second_create = asyncio.create_task(
+            qwen.create_grounded_response("B", second)
+        )
+        await asyncio.sleep(0)
+        assert len(socket.sent) == 1
+        await qwen.retire_active_response()
+        await qwen._handle_event(
+            {"type": "response.created", "response": {"id": "resp-a"}}
+        )
+        await asyncio.wait_for(second_create, 0.2)
+
+    asyncio.run(exercise())
+    payloads = [json.loads(item) for item in socket.sent]
+    assert [item["type"] for item in payloads].count("response.create") == 2
+    assert payloads[-1]["response"]["instructions"] == "B"
+    assert "resp-a" not in qwen.response_identities
+
+
+def test_new_turn_retires_active_response_before_next_create():
+    from app.agent.qwen_realtime_client import QwenRealtimeClient
+
+    first = TurnIdentity("sess", "conn", "turn-a", "db")
+    second = TurnIdentity("sess", "conn", "turn-b", "db")
+    socket = QwenSocket()
+    qwen = QwenRealtimeClient(response_gate=lambda _: True)
+    qwen.websocket = socket
+
+    async def exercise():
+        await qwen.create_grounded_response("A", first)
+        await qwen._handle_event(
+            {"type": "response.created", "response": {"id": "resp-a"}}
+        )
+        await qwen.retire_active_response()
+        await qwen.create_grounded_response("B", second)
+
+    asyncio.run(exercise())
+    types = [json.loads(item)["type"] for item in socket.sent]
+    assert types == ["response.create", "response.cancel", "response.create"]
+
+
+def test_retired_pending_response_never_uses_next_turn_identity():
+    from app.agent.qwen_realtime_client import QwenRealtimeClient
+
+    outbound = []
+    first = TurnIdentity("sess", "conn", "turn-a", "db")
+    second = TurnIdentity("sess", "conn", "turn-b", "db")
+    socket = QwenSocket()
+
+    async def send(message):
+        outbound.append(message)
+
+    qwen = QwenRealtimeClient(send_event=send, response_gate=lambda _: True)
+    qwen.websocket = socket
+
+    async def exercise():
+        await qwen.create_grounded_response("A", first)
+        second_create = asyncio.create_task(
+            qwen.create_grounded_response("B", second)
+        )
+        await asyncio.sleep(0)
+        await qwen.retire_active_response()
+        await qwen._handle_event(
+            {"type": "response.created", "response": {"id": "resp-a"}}
+        )
+        await second_create
+        await qwen._handle_event(
+            {"type": "response.created", "response": {"id": "resp-b"}}
+        )
+
+    asyncio.run(exercise())
+    assert [item["turn_id"] for item in outbound] == ["turn-b"]

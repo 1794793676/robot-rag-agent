@@ -58,7 +58,7 @@ class InterruptionController:
             state.current_turn.turn_id if state.current_turn else None,
         )
         client = self._clients.get(session_id)
-        if client and target_response_id:
+        if client:
             await client.cancel_response(target_response_id)
 
         state.interrupted = True

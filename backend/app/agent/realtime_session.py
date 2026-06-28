@@ -91,6 +91,7 @@ class RealtimeAgentSession:
             interruption_controller.unregister_sender(self.session_id)
             await self._cancel_active_turn_task()
             self.store.cancel_session(self.session_id)
+            await self.qwen.retire_active_response()
             self._reset_audio_commit()
             await self.qwen.close()
 
@@ -187,6 +188,7 @@ class RealtimeAgentSession:
         elif msg_type == "close":
             await self._cancel_active_turn_task()
             self.store.cancel_session(self.session_id)
+            await self.qwen.retire_active_response()
             self._reset_audio_commit()
             await self.qwen.close()
         else:
@@ -226,6 +228,7 @@ class RealtimeAgentSession:
         self, user_text: str, *, add_text_item: bool
     ) -> None:
         await self._cancel_active_turn_task()
+        await self.qwen.retire_active_response()
         self._turn_task = asyncio.create_task(
             self._run_turn(user_text, add_text_item=add_text_item)
         )

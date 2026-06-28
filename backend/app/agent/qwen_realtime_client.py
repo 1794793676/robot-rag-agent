@@ -75,7 +75,12 @@ class QwenRealtimeClient:
         self.closed = False
         self.current_response_id: str | None = None
         self.pending_response_identity: TurnIdentity | None = None
+        self.pending_response_retired = False
         self.response_identities: dict[str, TurnIdentity] = {}
+        self.retired_response_ids: set[str] = set()
+        self._response_create_slot = asyncio.Event()
+        self._response_create_slot.set()
+        self._response_create_lock = asyncio.Lock()
 
     async def connect(self, session_id: str) -> None:
         self.session_id = session_id
@@ -151,15 +156,36 @@ class QwenRealtimeClient:
             or not self.response_gate(identity)
         ):
             return False
-        self.pending_response_identity = identity
-        response = {"instructions": instructions} if instructions is not None else {}
-        await self._send(
-            {
-                "type": "response.create",
-                "event_id": self._event_id(),
-                "response": response,
-            }
-        )
+        async with self._response_create_lock:
+            try:
+                await asyncio.wait_for(
+                    self._response_create_slot.wait(), timeout=2.0
+                )
+            except TimeoutError as exc:
+                raise QwenRealtimeError(
+                    "QWEN_RESPONSE_CREATE_TIMEOUT",
+                    "Previous Qwen response creation did not resolve",
+                    "The pending response was retired but Qwen did not acknowledge it.",
+                ) from exc
+            if not self._identity_is_current(identity):
+                return False
+            self._response_create_slot.clear()
+            self.pending_response_identity = identity
+            self.pending_response_retired = False
+            response = {"instructions": instructions} if instructions is not None else {}
+            try:
+                await self._send(
+                    {
+                        "type": "response.create",
+                        "event_id": self._event_id(),
+                        "response": response,
+                    }
+                )
+            except Exception:
+                self.pending_response_identity = None
+                self.pending_response_retired = False
+                self._response_create_slot.set()
+                raise
         return True
 
     async def send_text_event(self, text: str) -> None:
@@ -206,16 +232,34 @@ class QwenRealtimeClient:
         await self.create_grounded_response(None, identity)
 
     async def cancel_response(self, response_id: str | None = None) -> None:
-        if not self.websocket:
-            return
-        await self._send({"type": "response.cancel", "event_id": self._event_id()})
-        if response_id:
-            self.response_identities.pop(response_id, None)
-        self.pending_response_identity = None
+        await self.retire_active_response(response_id)
         agent_log.info("cancel_response session=%s response=%s", self.session_id, response_id)
+
+    async def retire_active_response(
+        self, response_id: str | None = None
+    ) -> None:
+        if self.pending_response_identity:
+            self.pending_response_retired = True
+        ids = (
+            {response_id}
+            if response_id
+            else set(self.response_identities)
+        )
+        for rid in ids:
+            if rid:
+                self.response_identities.pop(rid, None)
+                self.retired_response_ids.add(rid)
+        if self.websocket and (self.pending_response_identity or ids):
+            await self._send(
+                {"type": "response.cancel", "event_id": self._event_id()}
+            )
 
     async def close(self) -> None:
         self.closed = True
+        self.pending_response_identity = None
+        self.pending_response_retired = False
+        self.response_identities.clear()
+        self._response_create_slot.set()
         if self.websocket:
             await self.websocket.close()
             self.websocket = None
@@ -245,7 +289,21 @@ class QwenRealtimeClient:
         if event_type == "response.created":
             rid = event.get("response", {}).get("id") or response_id
             identity = self.pending_response_identity
+            retired = self.pending_response_retired
             self.pending_response_identity = None
+            self.pending_response_retired = False
+            self._response_create_slot.set()
+            if retired:
+                if rid:
+                    self.retired_response_ids.add(rid)
+                    if self.websocket:
+                        await self._send(
+                            {
+                                "type": "response.cancel",
+                                "event_id": self._event_id(),
+                            }
+                        )
+                return
             if not rid or not identity or not self._identity_is_current(identity):
                 return
             self.response_identities[rid] = identity
@@ -336,12 +394,16 @@ class QwenRealtimeClient:
                 await self.send_event(
                     self._response_event(identity, "response_done", rid)
                 )
-        elif event_type == "error":
+        elif event_type in ("error", "response.cancelled", "response.canceled"):
+            if self.pending_response_identity:
+                self.pending_response_identity = None
+                self.pending_response_retired = False
+                self._response_create_slot.set()
             if self.audio_error_callback:
                 result = self.audio_error_callback()
                 if asyncio.iscoroutine(result):
                     await result
-            if self.send_event:
+            if event_type == "error" and self.send_event:
                 await self.send_event(
                     {
                         "type": "error",
