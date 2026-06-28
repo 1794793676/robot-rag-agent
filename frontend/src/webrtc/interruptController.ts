@@ -38,6 +38,7 @@ export function updateVadState(
     if (speechMs >= INTERRUPT_CONFIG.minSpeechMs) next.validSpeech = true
     if (
       !next.speechStartEmitted &&
+      next.validSpeech &&
       speechMs >= INTERRUPT_CONFIG.vadStartMs &&
       input.agentSpeaking &&
       !input.inCooldown
@@ -50,6 +51,12 @@ export function updateVadState(
 
   if (next.speechStartedAt === null) return { state: next, events }
   if (next.silenceStartedAt === null) next.silenceStartedAt = input.now
+  if (
+    !next.validSpeech &&
+    input.now - next.silenceStartedAt >= INTERRUPT_CONFIG.vadStartMs
+  ) {
+    return { state: createVadState(), events }
+  }
   if (
     next.validSpeech &&
     input.now - next.silenceStartedAt >= INTERRUPT_CONFIG.speechEndSilenceMs

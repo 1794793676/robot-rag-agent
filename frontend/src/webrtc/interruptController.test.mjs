@@ -48,3 +48,24 @@ test('does not end a short utterance and preserves interruption cooldown', () =>
 
   assert.deepEqual(events, [])
 })
+
+test('does not combine short bursts separated by silence into a voice turn', () => {
+  let state = createVadState()
+  const events = []
+  const update = (now, isSpeech) => {
+    const result = updateVadState(state, { now, isSpeech, agentSpeaking: true, inCooldown: false })
+    state = result.state
+    events.push(...result.events)
+  }
+
+  update(0, true)
+  update(100, true)
+  update(101, false)
+  update(300, false)
+  update(1000, true)
+  update(1200, true)
+  update(1201, false)
+  update(2200, false)
+
+  assert.deepEqual(events, [])
+})
