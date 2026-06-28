@@ -114,6 +114,8 @@ def rerank_results(case: dict[str, Any], fake: bool = False, candidate_k: int = 
                    similarity_threshold: float = 0.0) -> list[dict[str, Any]]:
     candidates = [item for item in vector_results(case)
                   if item["score"] >= similarity_threshold][:candidate_k]
+    if not candidates:
+        return []
     documents_by_id = {
         (doc["doc_id"], doc.get("chunk_id")): doc for doc in case["documents"]
     }

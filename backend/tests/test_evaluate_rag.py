@@ -146,6 +146,18 @@ def test_pair_calibration_reranks_each_live_case_once(monkeypatch):
     assert calls == ["case-0", "case-1", "case-2"]
 
 
+def test_live_reranker_skips_empty_cross_database_candidates(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "unused")
+    case = {
+        "case_id": "cross-db", "rag_database_id": "primary", "query": "payroll",
+        "documents": [{
+            "doc_id": "foreign", "chunk_id": "foreign-chunk",
+            "database_id": "other", "text": "payroll policy",
+        }],
+    }
+    assert rerank_results(case, fake=False) == []
+
+
 def test_vector_scoring_is_scoped_to_case_database():
     case = {
         "query": "secret payroll policy",
