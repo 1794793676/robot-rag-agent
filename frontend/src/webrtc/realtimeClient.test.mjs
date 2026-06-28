@@ -108,6 +108,32 @@ test('ignores identity events and close callbacks from an old socket', async () 
   assert.deepEqual(delivered.map((message) => message.type), ['retrieval'])
 })
 
+test('ignores server events that do not carry the complete active identity', async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      session_id: 's1',
+      connection_id: 'c1',
+      rag_database_id: 'db1',
+      websocket_url: '/ws',
+    }),
+  })
+  const client = new RealtimeClient()
+  const delivered = []
+  client.onMessage((message) => delivered.push(message))
+
+  await client.createSession()
+  const connected = client.connect()
+  const socket = FakeWebSocket.instances.at(-1)
+  socket.open()
+  await connected
+
+  socket.message({ type: 'retrieval_result', session_id: 's1' })
+  socket.message({ type: 'pipeline_stage', stage: 'retrieving' })
+
+  assert.deepEqual(delivered, [])
+})
+
 test('commits the current microphone audio turn', async () => {
   globalThis.fetch = async () => ({
     ok: true,

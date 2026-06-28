@@ -35,7 +35,21 @@ class RecordingOrchestrator:
 
     async def prepare_turn(self, identity, text):
         self.calls.append(("prepare", text, identity))
-        return GenerationContext(identity, text, True, "grounded", {})
+        return GenerationContext(
+            identity,
+            text,
+            True,
+            "grounded",
+            {
+                "rag_database_id": identity.rag_database_id,
+                "decision_score": 0.82,
+                "decision_threshold": 0.5,
+                "decision_score_type": "rerank",
+                "rerank_applied": True,
+                "rerank_degraded": False,
+                "results": [{"source": "manual.pdf", "score": 0.82}],
+            },
+        )
 
 
 class SlowOrchestrator:
@@ -128,6 +142,13 @@ def test_text_turn_retrieves_before_explicit_response_and_adds_identity(monkeypa
     )
     assert session.websocket.sent[-1]["type"] == "pipeline_stage"
     assert session.websocket.sent[-1]["stage"] == "generating"
+    retrieval_event = next(
+        event for event in session.websocket.sent if event["type"] == "retrieval_result"
+    )
+    assert retrieval_event["result"]["decision_score"] == 0.82
+    assert retrieval_event["result"]["decision_threshold"] == 0.5
+    assert retrieval_event["result"]["decision_score_type"] == "rerank"
+    assert retrieval_event["result"]["rerank_degraded"] is False
     assert calls[0][2].connection_id == state.connection_id
 
 

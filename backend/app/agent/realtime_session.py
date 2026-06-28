@@ -329,6 +329,18 @@ class RealtimeAgentSession:
         context = await self.orchestrator.prepare_turn(identity, user_text)
         if context is None:
             return
+        if not self._identity_is_current(identity):
+            return
+        await self.send_to_browser(
+            {
+                "type": "retrieval_result",
+                "session_id": identity.session_id,
+                "connection_id": identity.connection_id,
+                "turn_id": identity.turn_id,
+                "rag_database_id": identity.rag_database_id,
+                "result": context.retrieval,
+            }
+        )
         if context.retrieval.get("rerank_applied"):
             await self._emit_stage("reranking", identity)
         await self.generate(context)

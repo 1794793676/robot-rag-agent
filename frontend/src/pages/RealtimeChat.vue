@@ -12,6 +12,7 @@ import {
 } from '../webrtc/agentConversation'
 import { InterruptController } from '../webrtc/interruptController'
 import { RealtimeClient } from '../webrtc/realtimeClient'
+import { reduceConnection } from '../webrtc/connectionIdentity'
 
 const status = ref('idle')
 const session = ref(null)
@@ -26,12 +27,16 @@ const isUserSpeaking = ref(false)
 const micActive = ref(false)
 const diagnosticRunning = ref(false)
 const diagnostics = ref([])
+const inputEnabled = ref(false)
+const retrievalDiagnostics = ref(null)
 const interruptedResponseIds = new Set()
 let activeDiagnostic = null
 let voiceTurnCommitted = false
+let databaseSwitchSequence = 0
 
 const props = defineProps({
   ragDatabaseId: { type: String, default: '' },
+  ragDatabase: { type: Object, default: null },
 })
 
 const client = new RealtimeClient()
@@ -45,6 +50,10 @@ const statusLabel = computed(() => {
     connected: '已连接',
     listening: '收音中',
     transcribing: '转写中',
+    retrieving: '检索中',
+    reranking: '重排中',
+    generating: '生成中',
+    switching_database: '切换数据库中',
     thinking: '思考中',
     speaking: '播报中',
     interrupted: '已打断',
@@ -57,6 +66,12 @@ client.onMessage((message) => {
   recordDiagnosticEvent(message)
   if (message.type === 'connected') {
     status.value = 'connected'
+    inputEnabled.value = true
+  } else if (message.type === 'pipeline_stage') {
+    status.value = message.stage
+  } else if (message.type === 'retrieval_result') {
+    retrievalDiagnostics.value = message.result || message.retrieval || message
+    sources.value = retrievalDiagnostics.value.results || []
   } else if (message.type === 'response_started') {
     currentResponseId.value = message.response_id
     interruptedResponseIds.delete(message.response_id)
@@ -105,9 +120,11 @@ client.onMessage((message) => {
     setAgentSpeaking(false)
     micActive.value = false
     status.value = 'idle'
+    inputEnabled.value = false
   } else if (message.type === 'error') {
     error.value = message.message || '实时 Agent 出错'
     status.value = 'error'
+    inputEnabled.value = false
   }
   publishDiagnostics()
 })
@@ -130,20 +147,80 @@ interruptController.onUserSpeechEnd(() => {
   status.value = 'transcribing'
 })
 
-async function connect() {
-  if (status.value === 'connecting' || status.value === 'connected') return
-  error.value = ''
-  status.value = 'connecting'
-  try {
-    session.value = await client.createSession({ rag_database_id: props.ragDatabaseId || undefined })
-    await client.connect()
-  } catch (err) {
-    error.value = err?.message || '连接失败'
+async function connect(
+  databaseId = props.ragDatabaseId,
+  { reconnecting = false, switchSequence = null } = {},
+) {
+  if (!databaseId) {
+    error.value = '请先选择 RAG 数据库'
     status.value = 'error'
+    inputEnabled.value = false
+    return false
+  }
+  if (!reconnecting && (status.value === 'connecting' || status.value === 'connected')) return true
+  error.value = ''
+  status.value = reconnecting ? 'switching_database' : 'connecting'
+  inputEnabled.value = false
+  try {
+    const created = await client.createSession({ rag_database_id: databaseId })
+    if (
+      (switchSequence !== null && switchSequence !== databaseSwitchSequence)
+      || databaseId !== props.ragDatabaseId
+    ) {
+      await client.close()
+      return false
+    }
+    if (
+      created.rag_database_id !== databaseId
+      || !created.session_id
+      || !created.connection_id
+      || client.identity?.sessionId !== created.session_id
+      || client.identity?.connectionId !== created.connection_id
+      || client.identity?.ragDatabaseId !== databaseId
+    ) {
+      throw new Error('Agent 会话身份与当前 RAG 数据库不一致')
+    }
+    session.value = created
+    await client.connect()
+    if (
+      (switchSequence !== null && switchSequence !== databaseSwitchSequence)
+      || databaseId !== props.ragDatabaseId
+    ) {
+      await client.close()
+      session.value = null
+      return false
+    }
+    const next = reduceConnection(
+      {
+        status: status.value,
+        inputEnabled: inputEnabled.value,
+        pendingDatabaseId: reconnecting ? databaseId : null,
+      },
+      { type: 'CONNECTED', databaseId },
+    )
+    status.value = next.status
+    inputEnabled.value = next.inputEnabled
+    return true
+  } catch (err) {
+    await client.close()
+    session.value = null
+    error.value = err?.message || '连接失败'
+    const next = reduceConnection(
+      {
+        status: status.value,
+        inputEnabled: false,
+        pendingDatabaseId: databaseId,
+      },
+      { type: 'CONNECT_FAILED' },
+    )
+    status.value = next.status
+    inputEnabled.value = next.inputEnabled
+    return false
   }
 }
 
 async function toggleMic() {
+  if (status.value === 'switching_database') return
   try {
     if (!client.sessionId) await connect()
     if (micActive.value) {
@@ -170,6 +247,7 @@ async function sendText() {
   if (!text) return
   if (!client.sessionId || status.value === 'idle' || status.value === 'error') await connect()
   if (status.value === 'error') return
+  if (!inputEnabled.value) return
   messages.value.push({ id: `${Date.now()}-u`, role: 'user', text })
   client.sendUserText(text)
   textInput.value = ''
@@ -353,16 +431,37 @@ onMounted(() => {
 
 watch(
   () => props.ragDatabaseId,
-  () => {
-    if (!client.sessionId) return
+  async (next, previous) => {
+    const wasConnected = Boolean(
+      (client.sessionId && client.identity) || status.value === 'switching_database',
+    )
+    if (!previous || !next || next === previous || !wasConnected) return
+    const sequence = ++databaseSwitchSequence
+    const transition = reduceConnection(
+      {
+        status: status.value,
+        inputEnabled: inputEnabled.value,
+        pendingDatabaseId: null,
+      },
+      { type: 'DATABASE_CHANGED', databaseId: next, wasConnected },
+    )
+    status.value = transition.status
+    inputEnabled.value = transition.inputEnabled
+    error.value = ''
     interruptController.stop()
     audioPlayer.stop()
-    client.close()
+    client.stopMicrophone()
+    await client.close()
+    if (sequence !== databaseSwitchSequence) return
     session.value = null
     voiceTurnCommitted = false
     micActive.value = false
     setAgentSpeaking(false)
-    status.value = 'idle'
+    currentResponseId.value = null
+    sources.value = []
+    toolCalls.value = []
+    retrievalDiagnostics.value = null
+    await connect(next, { reconnecting: true, switchSequence: sequence })
   },
 )
 
@@ -381,17 +480,29 @@ onBeforeUnmount(() => {
       <div>
         <h2>实时语音 Agent</h2>
         <p>{{ session?.model || 'qwen3.5-omni-flash-realtime' }} · {{ statusLabel }}<span v-if="isUserSpeaking"> · 用户说话中</span></p>
+        <p class="agent-database">当前数据库：{{ ragDatabase?.name || ragDatabaseId || '未选择' }}</p>
       </div>
       <div class="agent-actions">
-        <button class="primary" :disabled="status === 'connecting'" @click="connect">
+        <button class="primary" :disabled="status === 'connecting' || status === 'switching_database'" @click="connect()">
           {{ client.sessionId ? '重新连接' : '连接 Agent' }}
         </button>
-        <VoiceButton :active="micActive" :disabled="status === 'connecting'" @click="toggleMic" />
+        <VoiceButton :active="micActive" :disabled="!inputEnabled" @click="toggleMic" />
         <button class="danger-button" :disabled="!agentSpeaking" @click="manualInterrupt">打断</button>
       </div>
     </div>
 
     <p v-if="error" class="error">{{ error }}</p>
+
+    <section class="pipeline-status" aria-live="polite">
+      <strong>RAG-first 阶段：{{ statusLabel }}</strong>
+      <span v-if="retrievalDiagnostics">
+        判定 {{ Number(retrievalDiagnostics.decision_score ?? 0).toFixed(3) }}
+        / 阈值 {{ Number(retrievalDiagnostics.decision_threshold ?? 0).toFixed(3) }}
+        · {{ retrievalDiagnostics.decision_score_type || 'unknown' }}
+        · Rerank {{ retrievalDiagnostics.rerank_degraded ? '已降级' : '正常' }}
+      </span>
+      <span>数据库：{{ ragDatabase?.name || ragDatabaseId || '-' }}</span>
+    </section>
 
     <section class="agent-card diagnostic-panel">
       <div class="agent-card-head">
@@ -424,8 +535,8 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="agent-input">
-      <textarea v-model="textInput" placeholder="也可以输入文字调试工具调用…" @keydown.ctrl.enter="sendText"></textarea>
-      <button class="primary" @click="sendText">发送</button>
+      <textarea v-model="textInput" :disabled="!inputEnabled" placeholder="也可以输入文字调试工具调用…" @keydown.ctrl.enter="sendText"></textarea>
+      <button class="primary" :disabled="!inputEnabled" @click="sendText">发送</button>
     </div>
   </section>
 </template>

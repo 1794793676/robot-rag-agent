@@ -1,5 +1,4 @@
 import {
-  hasConnectionIdentity,
   matchesActiveConnection,
   type ConnectionIdentity,
 } from './connectionIdentity'
@@ -56,7 +55,7 @@ export class RealtimeClient {
         if (this.ws !== ws || this.identity !== identity) return
         try {
           const message = JSON.parse(event.data)
-          if (hasConnectionIdentity(message) && !matchesActiveConnection(message, identity)) return
+          if (!matchesActiveConnection(message, identity)) return
           this.handlers.forEach((handler) => handler(message))
         } catch {
           this.handlers.forEach((handler) => handler({ type: 'error', message: '收到无效消息' }))
