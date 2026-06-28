@@ -295,7 +295,11 @@ onMounted(async () => {
       <button data-testid="agent-tab" :class="{ active: activePage === 'agent' }" @click="activePage = 'agent'">实时语音 Agent</button>
     </nav>
 
-    <section class="global-database-selector" aria-label="当前 RAG 数据库">
+    <section
+      class="global-database-selector"
+      aria-label="当前 RAG 数据库"
+      data-testid="global-rag-database-selector"
+    >
       <div class="database-current">
         <span class="eyebrow">CURRENT RAG DATABASE</span>
         <strong>{{ selectedRagDatabase?.name || '未选择数据库' }}</strong>
@@ -305,7 +309,9 @@ onMounted(async () => {
           {{ selectedRagDatabase?.chunk_count ?? 0 }} 个 Chunks ·
           {{ selectedRagDatabaseId ? '可用' : '不可用' }}
         </small>
-        <small class="agent-selector-status">{{ agentStatusLabel }}</small>
+        <small class="agent-selector-status" data-testid="agent-selector-status">
+          {{ agentStatusLabel }}
+        </small>
       </div>
       <div class="database-row">
         <select

@@ -278,6 +278,17 @@ function setAgentSpeaking(value) {
   interruptController.setAgentSpeaking(value)
 }
 
+function clearConnectionArtifacts() {
+  session.value = null
+  voiceTurnCommitted = false
+  micActive.value = false
+  setAgentSpeaking(false)
+  currentResponseId.value = null
+  sources.value = []
+  toolCalls.value = []
+  retrievalDiagnostics.value = null
+}
+
 async function runStreamDiagnostic() {
   await runDiagnostic('stream', '流式文本/语音', async () => {
     await ensureConnectedForDiagnostic()
@@ -449,14 +460,7 @@ watch(
     client.stopMicrophone()
     await connectionAttempts.disconnect()
     if (sequence !== databaseSwitchSequence) return
-    session.value = null
-    voiceTurnCommitted = false
-    micActive.value = false
-    setAgentSpeaking(false)
-    currentResponseId.value = null
-    sources.value = []
-    toolCalls.value = []
-    retrievalDiagnostics.value = null
+    clearConnectionArtifacts()
     await connect(next, { reconnecting: true, switchSequence: sequence })
   },
 )
@@ -539,7 +543,14 @@ watch(
 
     <div class="agent-input">
       <textarea v-model="textInput" :disabled="!inputEnabled" placeholder="也可以输入文字调试工具调用…" @keydown.ctrl.enter="sendText"></textarea>
-      <button class="primary" :disabled="!inputEnabled" @click="sendText">发送</button>
+      <button
+        class="primary"
+        data-testid="agent-send"
+        :disabled="!inputEnabled"
+        @click="sendText"
+      >
+        发送
+      </button>
     </div>
   </section>
 </template>
